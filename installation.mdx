@@ -1,0 +1,73 @@
+---
+title: "Install HaishinKit via Swift Package Manager"
+description: "Add HaishinKit to your Xcode project via Swift Package Manager. Choose from five modules — RTMP, SRT, WebRTC, MoQT, and core — based on your app's protocol needs."
+---
+
+HaishinKit is distributed exclusively through Swift Package Manager. You add the repository once and then select only the protocol modules your app requires — there is no need to import the entire SDK if you only need RTMP streaming.
+
+## Add the package to Xcode
+
+In Xcode, go to **File → Add Package Dependencies** and enter the following URL:
+
+```
+https://github.com/HaishinKit/HaishinKit.swift
+```
+
+Xcode will fetch the package and display a list of available library products. Select the modules you need (see the table below), then click **Add Package**.
+
+<Tip>
+  You do not need to add `HaishinKit` (the core) manually. Every protocol module — `RTMPHaishinKit`, `SRTHaishinKit`, `MoQTHaishinKit`, and `RTCHaishinKit` — declares it as a dependency and Xcode resolves it automatically.
+</Tip>
+
+## Available modules
+
+| Module | Use when… |
+|---|---|
+| `HaishinKit` | You only need the core media pipeline (`MediaMixer`, video mixing, the `StreamSession` API) without any specific protocol. Always included transitively when you add any other module. |
+| `RTMPHaishinKit` | You want to publish or play back streams over RTMP/RTMPS to servers such as Nginx-RTMP, Wowza, or platforms like YouTube Live and Twitch. Supports H.264, HEVC, AAC, and OPUS. Includes Enhanced RTMP and FMLE-compatible authentication. |
+| `SRTHaishinKit` | You need low-latency SRT streaming. Built on [libsrt](https://github.com/Haivision/srt) (included as a prebuilt xcframework). Supports H.264, HEVC, and AAC in caller, listener, and rendezvous modes. **Not available for Mac Catalyst.** |
+| `RTCHaishinKit` | You want to publish via WHIP or subscribe via WHEP (WebRTC). Built on [libdatachannel](https://github.com/paullouisageneau/libdatachannel). Supports H.264 and OPUS. Currently in alpha. |
+| `MoQTHaishinKit` | You are researching or testing the MoQT protocol (draft7). Live streaming features are not yet implemented; this module is for protocol-level development only. |
+
+## Platform requirements
+
+| Platform | Minimum version |
+|---|---|
+| iOS | 15.0+ |
+| tvOS | 15.0+ |
+| Mac Catalyst | 15.0+ |
+| macOS | 12.0+ |
+| visionOS | 1.0+ |
+
+<Warning>
+  `SRTHaishinKit` is not available for Mac Catalyst due to the libsrt xcframework dependency. If your target includes Mac Catalyst, do not add `SRTHaishinKit` to that target.
+</Warning>
+
+## Development requirements
+
+| HaishinKit version | Xcode | Swift |
+|---|---|---|
+| 2.2.0+ | 26.0+ | 6.0+ |
+| 2.1.0+ | 16.4+ | 6.0+ |
+
+## Verify your installation
+
+After adding the package, import any module at the top of a Swift file to confirm the package resolved correctly:
+
+```swift
+import HaishinKit
+import RTMPHaishinKit
+```
+
+If Xcode reports an unresolved module, select your target under **Project Settings → Package Dependencies** and confirm the correct library products are checked.
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Get started with HaishinKit" icon="rocket" href="/quickstart">
+    Follow the quickstart guide to configure permissions, set up AVAudioSession, and publish your first RTMP stream.
+  </Card>
+  <Card title="HaishinKit introduction" icon="book-open" href="/introduction">
+    Learn about HaishinKit's modules, key features, and supported platforms.
+  </Card>
+</CardGroup>

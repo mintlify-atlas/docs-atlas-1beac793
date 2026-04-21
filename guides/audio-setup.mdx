@@ -1,0 +1,257 @@
+---
+title: "Configure audio capture and mixing in HaishinKit"
+description: "Set up AVAudioSession, attach microphones, enable multi-track audio mixing, tune AudioMixerSettings, and monitor audio output in HaishinKit."
+---
+
+HaishinKit's audio pipeline is built around `MediaMixer`, which manages one or more audio input devices, mixes their output according to `AudioMixerSettings`, and delivers the result to any attached stream or recorder. This guide walks through configuring `AVAudioSession` on iOS, attaching microphones, enabling multi-track mixing, and monitoring audio in real time.
+
+## iOS: configure AVAudioSession
+
+Before starting the mixer on iOS you must configure `AVAudioSession` with the appropriate category, mode, and options. A typical live-streaming configuration enables the built-in speaker as the default output route and allows Bluetooth headsets:
+
+```swift
+import AVFoundation
+
+let session = AVAudioSession.sharedInstance()
+do {
+    try session.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .allowBluetooth])
+    try session.setActive(true)
+} catch {
+    print(error)
+}
+```
+
+<Note>
+  Use `.allowBluetooth` for hands-free (HFP) Bluetooth audio and `.allowBluetoothA2DP` if you want high-quality stereo Bluetooth output (though A2DP has higher latency and is usually not suitable for live streaming).
+</Note>
+
+### Info.plist microphone permission
+
+You must declare microphone usage in your app's `Info.plist` or iOS will silently fail to grant access:
+
+```xml
+<key>NSMicrophoneUsageDescription</key>
+<string>Microphone access is required to capture audio for live streaming.</string>
+```
+
+## Attach an audio device
+
+Use `attachAudio(_:track:)` to connect an `AVCaptureDevice` to the mixer. The default track number is `0`.
+
+```swift
+// Attach the default microphone to track 0
+try? await mixer.attachAudio(AVCaptureDevice.default(for: .audio))
+```
+
+To detach (mute) the microphone, pass `nil`:
+
+```swift
+try? await mixer.attachAudio(nil)
+```
+
+## Multi-track audio mixing
+
+Multi-track audio lets you mix audio from more than one source—for example, two microphones on macOS or a microphone plus app audio from ReplayKit. Enable it at initialization time:
+
+```swift
+let mixer = MediaMixer(multiTrackAudioMixingEnabled: true)
+```
+
+<Warning>
+  On iOS, only one microphone input is available via `AVCaptureSession`. Multi-microphone capture works on macOS. For iOS multi-track audio use cases, see the ReplayKit screen-capture guide where `.audioMic` and `.audioApp` tracks are mixed together.
+</Warning>
+
+### Attaching multiple microphones (macOS)
+
+```swift
+let mixer = MediaMixer(multiTrackAudioMixingEnabled: true)
+
+var audioDevices = AVCaptureDevice.devices(for: .audio)
+
+if let first = audioDevices.first {
+    audioDevices.removeFirst()
+    try? await mixer.attachAudio(first, track: 0)
+}
+if let second = audioDevices.first {
+    try? await mixer.attachAudio(second, track: 1)
+}
+```
+
+## AudioMixerSettings
+
+`AudioMixerSettings` controls the global output format and per-track behaviour of the audio mixer.
+
+```swift
+var settings = AudioMixerSettings(
+    sampleRate: 44100,   // 0 = match the main track source
+    channels: 2,         // 0 = match the main track source
+    isMuted: false,
+    mainTrack: 0
+)
+await mixer.setAudioMixerSettings(settings)
+```
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `sampleRate` | `Float64` | Output sample rate. `0` inherits from the main track source. Maximum is 48 000 Hz. |
+| `channels` | `UInt32` | Output channel count. `0` inherits from the main track source (capped at 2). |
+| `isMuted` | `Bool` | Mutes all audio output when `true`. |
+| `mainTrack` | `UInt8` | Track whose format is used as the reference when `sampleRate` or `channels` is `0`. |
+| `tracks` | `[UInt8: AudioMixerTrackSettings]` | Per-track overrides (volume, mute, channel mapping). |
+
+<Warning>
+  If you are using `StreamRecorder` for local recording, set `channels` to `1` or `2`. A value of `0` may result in silent audio in the recorded file if the source has more than 2 channels.
+</Warning>
+
+### Per-track settings: AudioMixerTrackSettings
+
+Each entry in `AudioMixerSettings.tracks` is an `AudioMixerTrackSettings` value:
+
+```swift
+var settings = await mixer.audioMixerSettings
+
+// Mute track 0
+settings.tracks[0] = AudioMixerTrackSettings(
+    volume: 1.0,
+    isMuted: true
+)
+
+// Reduce track 1 to 50% volume
+settings.tracks[1] = AudioMixerTrackSettings(
+    volume: 0.5,
+    isMuted: false
+)
+
+await mixer.setAudioMixerSettings(settings)
+```
+
+| Property | Type | Default | Description |
+|----------|------|---------|-------------|
+| `volume` | `Float` | `1.0` | Per-track output gain (0.0 – 1.0+). |
+| `isMuted` | `Bool` | `false` | Silences this track only. |
+| `downmix` | `Bool` | `true` | Mixes multi-channel input down to the output channel count. |
+| `channelMap` | `[Int]?` | `nil` | Maps specific input channels to output channels. |
+
+#### Channel mapping example
+
+If your source has 4 channels and you want to use channels 3 and 4 for a stereo output:
+
+```swift
+settings.tracks[0] = AudioMixerTrackSettings(
+    volume: 1.0,
+    channelMap: [2, 3]   // 0-indexed: input channels 3 and 4
+)
+```
+
+## Muting audio at runtime
+
+To mute the microphone mid-stream without detaching the device, update the track's `isMuted` flag:
+
+```swift
+var settings = await mixer.audioMixerSettings
+var track = settings.tracks[0] ?? AudioMixerTrackSettings()
+track.isMuted = true
+settings.tracks[0] = track
+await mixer.setAudioMixerSettings(settings)
+```
+
+Restore audio by setting `isMuted = false` and applying the settings again.
+
+## Audio monitoring
+
+`MediaMixer` can route mixed audio to the device speaker or headphones for real-time monitoring—useful for producers who need to hear the stream locally. Monitoring uses an `AudioUnit` output internally (`kAudioUnitSubType_RemoteIO` on iOS, `kAudioUnitSubType_DefaultOutput` on macOS).
+
+### Enable monitoring
+
+```swift
+await mixer.setMonitoringEnabled(true)
+```
+
+A common pattern is to enable monitoring only when headphones are connected, to prevent feedback:
+
+```swift
+// Example helper – check for any wired or Bluetooth headphone output route
+let isHeadphoneConnected = AVAudioSession.sharedInstance()
+    .currentRoute
+    .outputs
+    .contains { $0.portType == .headphones || $0.portType == .bluetoothA2DP }
+
+await mixer.setMonitoringEnabled(isHeadphoneConnected)
+```
+
+### Disable monitoring
+
+```swift
+await mixer.setMonitoringEnabled(false)
+```
+
+Read the current state at any time via:
+
+```swift
+let isEnabled = await mixer.isMonitoringEnabled
+```
+
+## AudioCodecSettings
+
+Codec-level settings (bitrate, format, sample rate) are configured separately on the stream, not on the mixer:
+
+```swift
+var audioSettings = await stream.audioSettings
+audioSettings.bitRate = 128_000        // 128 kbps
+audioSettings.format = .aac            // .aac, .opus, or .pcm
+audioSettings.sampleRate = 44100       // 0 = match input
+try await stream.setAudioSettings(audioSettings)
+```
+
+The default bitrate is 64 kbps AAC.
+
+## Complete setup example
+
+<Steps>
+  <Step title="Configure AVAudioSession">
+    ```swift
+    import AVFoundation
+
+    let audioSession = AVAudioSession.sharedInstance()
+    do {
+        try audioSession.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .allowBluetooth])
+        try audioSession.setActive(true)
+    } catch {
+        print(error)
+    }
+    ```
+  </Step>
+
+  <Step title="Create MediaMixer">
+    ```swift
+    let mixer = MediaMixer(multiTrackAudioMixingEnabled: false)
+    ```
+  </Step>
+
+  <Step title="Attach the microphone">
+    ```swift
+    try? await mixer.attachAudio(AVCaptureDevice.default(for: .audio))
+    ```
+  </Step>
+
+  <Step title="Configure mixer settings">
+    ```swift
+    await mixer.setAudioMixerSettings(AudioMixerSettings(
+        sampleRate: 44100,
+        channels: 2
+    ))
+    ```
+  </Step>
+
+  <Step title="Enable monitoring (optional)">
+    ```swift
+    await mixer.setMonitoringEnabled(true)
+    ```
+  </Step>
+
+  <Step title="Start the mixer">
+    ```swift
+    await mixer.startRunning()
+    ```
+  </Step>
+</Steps>

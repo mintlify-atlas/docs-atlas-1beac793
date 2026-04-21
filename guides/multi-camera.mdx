@@ -1,0 +1,178 @@
+---
+title: "Capture multiple cameras simultaneously on iOS"
+description: "Use AVCaptureMultiCamSession via CaptureSessionMode.multi to stream back and front cameras at the same time with picture-in-picture layouts."
+---
+
+HaishinKit supports simultaneous multi-camera capture on iOS and iPadOS using `AVCaptureMultiCamSession`. By initializing `MediaMixer` with `captureSessionMode: .multi`, you can attach multiple `AVCaptureDevice` inputs to separate tracks and compose them into a single stream—such as a full-screen back camera with a front-camera picture-in-picture overlay.
+
+<Note>
+  `AVCaptureMultiCamSession` is only available on iOS and iPadOS. Devices that do not support multi-cam will fall back gracefully; check `AVCaptureMultiCamSession.isMultiCamSupported` before relying on this feature.
+</Note>
+
+## Enable multi-camera mode
+
+Pass `captureSessionMode: .multi` when creating `MediaMixer`. This switches the underlying `AVCaptureSession` to an `AVCaptureMultiCamSession`, which allows more than one camera to run concurrently.
+
+```swift
+let mixer = MediaMixer(captureSessionMode: .multi)
+```
+
+The default `captureSessionMode` is `.single`, which uses a standard `AVCaptureSession` and only supports one active camera at a time.
+
+## Attach cameras to separate tracks
+
+Each camera is assigned a unique track number (`UInt8`). **Track 0 is the main track** and is rendered full-screen. Additional tracks (1, 2, …) are overlays that you position using `VideoScreenObject`.
+
+```swift
+Task {
+    // Back camera on track 0 (full-screen)
+    let back = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back)
+    try? await mixer.attachVideo(back, track: 0) { videoUnit in
+        videoUnit.isVideoMirrored = false
+    }
+
+    // Front camera on track 1 (overlay)
+    let front = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .front)
+    try? await mixer.attachVideo(front, track: 1) { videoUnit in
+        videoUnit.isVideoMirrored = true
+    }
+}
+```
+
+## Configure VideoMixerSettings
+
+`VideoMixerSettings` controls how tracks are composited. For multi-camera PiP layouts, use `.offscreen` mode so HaishinKit performs GPU-accelerated off-screen rendering. `.passthrough` mode passes the raw buffer through without compositing and is suitable when you only have a single track.
+
+```swift
+var settings = await mixer.videoMixerSettings
+settings.mode = .offscreen
+settings.mainTrack = 0          // Track 0 fills the screen
+await mixer.setVideoMixerSettings(settings)
+```
+
+| Mode | Description |
+|------|-------------|
+| `.passthrough` | Input buffer is used as-is; no compositing or effects applied |
+| `.offscreen` | Off-screen GPU rendering; required for overlays, CIFilter effects, and `VideoTrackScreenObject` |
+
+## Add a picture-in-picture overlay
+
+Use `VideoScreenObject` inside a `@ScreenActor` context to position the second camera as a PiP overlay. The `track` property links the screen object to the corresponding camera track.
+
+```swift
+Task { @ScreenActor in
+    let videoScreenObject = VideoScreenObject()
+    videoScreenObject.cornerRadius = 32.0
+    videoScreenObject.track = 1                     // Renders the front camera
+    videoScreenObject.horizontalAlignment = .right
+    videoScreenObject.layoutMargin = .init(top: 16, left: 0, bottom: 0, right: 16)
+    videoScreenObject.size = .init(width: 160 * 2, height: 90 * 2)
+
+    try? await mixer.screen.addChild(videoScreenObject)
+}
+```
+
+You can also register a `CIFilter`-based video effect on any `VideoScreenObject`:
+
+```swift
+_ = videoScreenObject.registerVideoEffect(MonochromeEffect())
+```
+
+## Switch the main camera at runtime
+
+Swap which track is full-screen by updating `mainTrack` in `VideoMixerSettings`, then update the overlay's `track` to the previously-main camera:
+
+```swift
+// Promote front camera to full-screen
+var settings = await mixer.videoMixerSettings
+settings.mainTrack = 1
+await mixer.setVideoMixerSettings(settings)
+
+// Move the overlay to the back camera
+Task { @ScreenActor in
+    videoScreenObject.track = 0
+}
+```
+
+## Multitasking camera access
+
+If your app needs to continue capturing while in the background (e.g., for PiP), opt in to multitasking camera access in your `AVCaptureSession` configuration:
+
+```swift
+await mixer.configuration { session in
+    if session.isMultitaskingCameraAccessSupported {
+        session.isMultitaskingCameraAccessEnabled = true
+    }
+}
+```
+
+## External and UVC cameras
+
+On iOS 17+ you can also attach an external (UVC) camera on track 0 using the `.external` device type. The setup is identical to built-in cameras:
+
+```swift
+let external = AVCaptureDevice.default(.external, for: .video, position: .unspecified)
+try? await mixer.attachVideo(external, track: 0)
+```
+
+Listen for `AVCaptureDevice.wasConnectedNotification` to detect when a USB camera is plugged in and re-attach it:
+
+```swift
+NotificationCenter.default.addObserver(
+    forName: .AVCaptureDeviceWasConnected,
+    object: nil,
+    queue: .main
+) { notification in
+    guard let device = notification.object as? AVCaptureDevice else { return }
+    Task {
+        try? await mixer.attachVideo(device, track: 0)
+    }
+}
+```
+
+## Full setup example
+
+<Steps>
+  <Step title="Create a multi-cam mixer">
+    ```swift
+    let mixer = MediaMixer(captureSessionMode: .multi)
+    ```
+  </Step>
+
+  <Step title="Set offscreen rendering mode">
+    ```swift
+    var settings = await mixer.videoMixerSettings
+    settings.mode = .offscreen
+    await mixer.setVideoMixerSettings(settings)
+    ```
+  </Step>
+
+  <Step title="Attach cameras to tracks">
+    ```swift
+    let back = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back)
+    let front = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .front)
+    try? await mixer.attachVideo(back, track: 0)
+    try? await mixer.attachVideo(front, track: 1)
+    ```
+  </Step>
+
+  <Step title="Add the PiP overlay">
+    ```swift
+    Task { @ScreenActor in
+        let pip = VideoScreenObject()
+        pip.track = 1
+        pip.cornerRadius = 32.0
+        pip.horizontalAlignment = .right
+        pip.layoutMargin = .init(top: 16, left: 0, bottom: 0, right: 16)
+        pip.size = .init(width: 320, height: 180)
+        try? await mixer.screen.addChild(pip)
+    }
+    ```
+  </Step>
+
+  <Step title="Start the mixer">
+    ```swift
+    await mixer.startRunning()
+    ```
+  </Step>
+</Steps>

@@ -1,0 +1,251 @@
+---
+title: 'Stream with SRT using SRTHaishinKit'
+description: 'Learn how to publish and play live streams over SRT using SRTHaishinKit, with H.264, HEVC, AAC support, socket options, and caller/listener/rendezvous modes.'
+---
+
+SRTHaishinKit is the SRT (Secure Reliable Transport) protocol stack for HaishinKit. It wraps [libsrt](https://github.com/Haivision/srt) — compiled as an xcframework — and exposes a Swift-native API for publishing and playing live streams over SRT.
+
+<Warning>
+SRTHaishinKit is not supported on Mac Catalyst. Use a native macOS or iOS target instead.
+</Warning>
+
+## Features
+
+<CardGroup cols={2}>
+  <Card title="Codecs" icon="film">
+    Publish and play with H.264, HEVC, and AAC over MPEG-TS.
+  </Card>
+  <Card title="Connection modes" icon="network">
+    Supports caller, listener, and rendezvous SRT modes via URL query parameters.
+  </Card>
+  <Card title="Socket options" icon="sliders">
+    Configure any libsrt socket option as a URL query parameter.
+  </Card>
+  <Card title="Performance data" icon="chart-bar">
+    Access live SRT performance statistics via `SRTConnection.performanceData`.
+  </Card>
+</CardGroup>
+
+## Set up logging
+
+Enable SRT-level logging before connecting. This wraps `srt_setloglevel` from libsrt.
+
+```swift
+await SRTLogger.shared.setLevel(.debug)
+```
+
+## Register the session factory
+
+Register `SRTSessionFactory` with the shared `StreamSessionBuilderFactory` before using any SRT sessions.
+
+```swift
+import SRTHaishinKit
+
+await StreamSessionBuilderFactory.shared.register(SRTSessionFactory())
+```
+
+## Publish a live stream
+
+<Steps>
+  <Step title="Set up the objects">
+    Create a `MediaMixer`, `SRTConnection`, `SRTStream`, and a preview view.
+
+    ```swift
+    let mixer = MediaMixer()
+    let connection = SRTConnection()
+    let stream = SRTStream(connection: connection)
+    let hkView = MTHKView(frame: view.bounds)
+    ```
+  </Step>
+  <Step title="Attach camera and microphone">
+    ```swift
+    Task {
+      do {
+        try await mixer.attachAudio(AVCaptureDevice.default(for: .audio))
+      } catch {
+        print(error)
+      }
+
+      do {
+        try await mixer.attachVideo(
+          AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back)
+        )
+      } catch {
+        print(error)
+      }
+
+      await mixer.addOutput(stream)
+    }
+    ```
+  </Step>
+  <Step title="Add the preview view">
+    ```swift
+    Task { @MainActor in
+      await stream.addOutput(hkView)
+      view.addSubview(hkView)
+    }
+    ```
+  </Step>
+  <Step title="Connect and publish">
+    ```swift
+    Task {
+      do {
+        try await connection.connect("srt://host:port")
+        await stream.publish()
+      } catch {
+        print(error)
+      }
+    }
+    ```
+  </Step>
+</Steps>
+
+## Play a live stream
+
+<Steps>
+  <Step title="Set up the objects">
+    ```swift
+    let connection = SRTConnection()
+    let stream = SRTStream(connection: connection)
+    let hkView = MTHKView(frame: view.bounds)
+    let audioPlayer = AudioPlayer(AVAudioEngine())
+    ```
+  </Step>
+  <Step title="Add the output view">
+    ```swift
+    Task { @MainActor in
+      await stream.addOutput(hkView)
+      view.addSubview(hkView)
+    }
+    ```
+  </Step>
+  <Step title="Connect and play">
+    Attach the audio player before connecting. This is required for audio output.
+
+    ```swift
+    Task {
+      await stream.attachAudioPlayer(audioPlayer)
+
+      do {
+        try await connection.connect("srt://host:port")
+        await stream.play()
+      } catch {
+        print(error)
+      }
+    }
+    ```
+  </Step>
+</Steps>
+
+## Publish and playback examples side by side
+
+<Tabs>
+  <Tab title="Publish">
+    ```swift
+    let mixer = MediaMixer()
+    let connection = SRTConnection()
+    let stream = SRTStream(connection: connection)
+    let hkView = MTHKView(frame: view.bounds)
+
+    Task {
+      do { try await mixer.attachAudio(AVCaptureDevice.default(for: .audio)) } catch { print(error) }
+      do {
+        try await mixer.attachVideo(
+          AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back)
+        )
+      } catch { print(error) }
+      await mixer.addOutput(stream)
+    }
+
+    Task { @MainActor in
+      await stream.addOutput(hkView)
+      view.addSubview(hkView)
+    }
+
+    Task {
+      do {
+        try await connection.connect("srt://host:port")
+        await stream.publish()
+      } catch {
+        print(error)
+      }
+    }
+    ```
+  </Tab>
+  <Tab title="Playback">
+    ```swift
+    let connection = SRTConnection()
+    let stream = SRTStream(connection: connection)
+    let hkView = MTHKView(frame: view.bounds)
+    let audioPlayer = AudioPlayer(AVAudioEngine())
+
+    Task { @MainActor in
+      await stream.addOutput(hkView)
+      view.addSubview(hkView)
+    }
+
+    Task {
+      await stream.attachAudioPlayer(audioPlayer)
+
+      do {
+        try await connection.connect("srt://host:port")
+        await stream.play()
+      } catch {
+        print(error)
+      }
+    }
+    ```
+  </Tab>
+</Tabs>
+
+## Socket options
+
+SRTHaishinKit uses libsrt's default socket settings. You can override any option supported by libsrt by passing it as a URL query parameter.
+
+```swift
+// Specify the SRT passphrase and key length
+try await connection.connect("srt://host:port?passphrase=secret&pbkeylen=16")
+
+// Connect in listener mode on a specific port
+try await connection.connect("srt://:9000?mode=listener")
+
+// Use rendezvous mode
+try await connection.connect("srt://peer-host:9000?mode=rendezvous")
+```
+
+The `mode` parameter controls the SRT connection mode:
+
+| Value | Description |
+|---|---|
+| `caller` | Connect to a remote SRT server (default). |
+| `listener` | Accept incoming SRT connections on the specified port. |
+| `rendezvous` | Both peers connect to each other simultaneously. |
+
+For a full list of supported options, see [SRTSocketOption.swift](https://github.com/shogo4405/HaishinKit.swift/blob/main/SRTHaishinKit/Sources/SRT/SRTSocketOption.swift).
+
+## Testing with ffmpeg and ffplay
+
+Use these commands to test publishing and playback against a local SRT endpoint.
+
+<Tabs>
+  <Tab title="ffplay (receive from HaishinKit)">
+    Run ffplay as a listener to receive a stream published by HaishinKit:
+
+    ```sh
+    ffplay -i 'srt://${YOUR_IP_ADDRESS}?mode=listener'
+    ```
+  </Tab>
+  <Tab title="ffmpeg (send to HaishinKit)">
+    Use ffmpeg to loop a file and send it to HaishinKit in playback mode:
+
+    ```sh
+    ffmpeg -stream_loop -1 -re -i input.mp4 -c copy -f mpegts 'srt://0.0.0.0:9998?mode=listener'
+    ```
+  </Tab>
+</Tabs>
+
+## License
+
+SRTHaishinKit is licensed under the BSD-3-Clause license.
+
+The bundled `libsrt.xcframework` is built from [Haivision/srt](https://github.com/Haivision/srt) and is licensed under MPLv2.0.

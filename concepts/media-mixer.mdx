@@ -1,0 +1,277 @@
+---
+title: "MediaMixer: Audio & Video Capture and Mixing"
+description: "Learn how MediaMixer manages AVCaptureSession, attaches cameras and microphones, controls frame rate, and routes mixed media to stream outputs."
+---
+
+`MediaMixer` is the central Swift actor in HaishinKit that owns the entire capture pipeline. It manages one or more `AVCaptureDevice` inputs, mixes their audio and video tracks, drives offscreen rendering through a `Screen` instance, and fans the resulting buffers out to any registered `MediaMixerOutput` observers — including live-stream connections and preview views.
+
+## Initialization
+
+`MediaMixer` is created with two optional parameters that lock in session behaviour for the lifetime of the object.
+
+```swift
+// Default — single AVCaptureSession, one camera at a time
+let mixer = MediaMixer()
+
+// Multi-cam session for simultaneous front + back cameras (iOS 13+)
+let mixer = MediaMixer(captureSessionMode: .multi)
+
+// ReplayKit / manual buffer injection — no AVCaptureSession at all
+let mixer = MediaMixer(captureSessionMode: .manual, multiTrackAudioMixingEnabled: true)
+```
+
+<ParamField path="captureSessionMode" type="CaptureSessionMode" default=".single">
+  Controls which kind of `AVCaptureSession` is created internally.
+
+  | Value | Session type | Typical use |
+  |---|---|---|
+  | `.single` | `AVCaptureSession` (single-cam) | Default; one camera + microphone |
+  | `.multi` | `AVCaptureMultiCamSession` | Simultaneous front & back cameras |
+  | `.manual` | None (`NullCaptureSession`) | ReplayKit or external buffer sources |
+</ParamField>
+
+<ParamField path="multiTrackAudioMixingEnabled" type="Bool" default="false">
+  When `true`, the mixer accepts audio on multiple numbered tracks and blends them before encoding. Required when mixing `.appAudio` and `.micAudio` from ReplayKit, or attaching several microphones on macOS.
+</ParamField>
+
+## Key Properties
+
+| Property | Type | Description |
+|---|---|---|
+| `captureSessionMode` | `CaptureSessionMode` | The session mode chosen at init time (read-only). |
+| `isMultiTrackAudioMixingEnabled` | `Bool` | Whether multi-track audio blending is active (read-only). |
+| `frameRate` | `Float64` | Current output frame rate (default `30`). |
+| `screen` | `Screen` | The `@ScreenActor`-isolated offscreen compositor used in `.offscreen` mode. |
+| `dynamicRangeMode` | `DynamicRangeMode` | SDR or HDR output mode. |
+| `isRunning` | `Bool` | Whether `startRunning()` has been called. |
+| `isCapturing` | `Bool` | Whether the underlying `AVCaptureSession` is running. |
+| `audioMixerSettings` | `AudioMixerSettings` | Current audio mix configuration (read-only snapshot). |
+| `videoMixerSettings` | `VideoMixerSettings` | Current video mix configuration (read-only snapshot). |
+
+## Attaching Devices
+
+### Camera
+
+```swift
+// Attach the default back camera to track 0
+try await mixer.attachVideo(
+    AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back),
+    track: 0
+)
+
+// Add a second camera on track 1 (requires .multi session mode)
+try await mixer.attachVideo(
+    AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .front),
+    track: 1
+)
+```
+
+<Note>
+  Multi-camera capture requires `captureSessionMode: .multi` and a device that supports `AVCaptureMultiCamSession` (iPhone XS or later).
+</Note>
+
+### Microphone
+
+```swift
+// Single microphone (all platforms)
+try await mixer.attachAudio(AVCaptureDevice.default(for: .audio))
+
+// Multiple microphones on macOS with multi-track mixing enabled
+var audios = AVCaptureDevice.devices(for: .audio)
+if let first = audios.first { try await mixer.attachAudio(first, track: 0) }
+if audios.count > 1 { try await mixer.attachAudio(audios[1], track: 1) }
+```
+
+## Running the Mixer
+
+<Steps>
+  <Step title="Add an output observer">
+    Wire up a stream or preview view before calling `startRunning()`.
+
+    ```swift
+    await mixer.addOutput(rtmpStream)
+    ```
+  </Step>
+  <Step title="Start the mixer">
+    ```swift
+    await mixer.startRunning()
+    ```
+
+    Internally this starts the `AVCaptureSession` and, if `VideoMixerSettings.mode == .offscreen`, kicks off the `DisplayLinkChoreographer` render loop.
+  </Step>
+  <Step title="Stop when finished">
+    ```swift
+    await mixer.stopRunning()
+    ```
+
+    Stops capture, cancels all subscriptions, and resets the offscreen renderer.
+  </Step>
+</Steps>
+
+### Capture vs. Running
+
+`startCapturing()` / `stopCapturing()` control only the `AVCaptureSession`, which is useful when you want camera preview before a live connection is established. `startRunning()` calls `startCapturing()` internally, so for most use cases you only need `startRunning()`.
+
+```swift
+// Show camera preview without streaming yet
+await mixer.startCapturing()
+
+// … later, start the full pipeline
+await mixer.addOutput(session)
+await mixer.startRunning()
+```
+
+## Key Methods
+
+### `setFrameRate(_:)`
+
+```swift
+try mixer.setFrameRate(60)
+```
+
+Sets the **output** frame rate of the mixer. In `.passthrough` mode this delegates to the camera device; in `.offscreen` mode it updates `DisplayLinkChoreographer.preferredFramesPerSecond`.
+
+<Warning>
+  To set the camera *capture* rate independently, use the device configuration block instead:
+
+  ```swift
+  try? await mixer.configuration(video: 0) { video in
+      try? video.setFrameRate(fps)
+  }
+  ```
+</Warning>
+
+### `setVideoMixerSettings(_:)`
+
+```swift
+// Switch to offscreen compositing mode
+mixer.setVideoMixerSettings(VideoMixerSettings(mode: .offscreen, mainTrack: 0))
+```
+
+`VideoMixerSettings` has two rendering modes:
+
+| Mode | Behaviour |
+|---|---|
+| `.passthrough` | Raw camera buffers are forwarded directly — zero compositing overhead. |
+| `.offscreen` | Buffers flow through the `Screen` compositor, enabling overlays, filters, and picture-in-picture. |
+
+### `setAudioMixerSettings(_:)`
+
+```swift
+mixer.setAudioMixerSettings(AudioMixerSettings(
+    sampleRate: 44100,
+    channels: 2,
+    isMuted: false,
+    mainTrack: 0
+))
+```
+
+### `setDynamicRangeMode(_:)`
+
+```swift
+try mixer.setDynamicRangeMode(.hdr)
+```
+
+<Warning>
+  HDR mode changes require reconfiguring the camera format, which takes a moment. Avoid toggling this during an active broadcast.
+</Warning>
+
+### `setTorchEnabled(_:)` / `setMonitoringEnabled(_:)`
+
+```swift
+mixer.setTorchEnabled(true)      // Camera flash / torch
+mixer.setMonitoringEnabled(true) // Route audio to speaker for monitoring
+```
+
+### `append(_:track:)`
+
+For manual buffer injection (`captureSessionMode: .manual`), push `CMSampleBuffer` or `AVAudioBuffer` directly:
+
+```swift
+// CMSampleBuffer path (video or audio detected via formatDescription)
+mixer.append(sampleBuffer, track: 0)
+
+// AVAudioBuffer path
+mixer.append(audioBuffer, when: audioTime, track: 0)
+```
+
+### `addOutput(_:)` / `removeOutput(_:)`
+
+```swift
+await mixer.addOutput(rtmpStream)
+await mixer.removeOutput(rtmpStream)
+```
+
+Any object conforming to `MediaMixerOutput` can be registered. Multiple outputs are supported simultaneously (e.g., stream + local recording).
+
+## MediaMixerOutput Protocol
+
+Implement this protocol to receive raw audio/video buffers from the mixer:
+
+```swift
+public protocol MediaMixerOutput: AnyObject, Sendable {
+    var videoTrackId: UInt8? { get async }
+    var audioTrackId: UInt8? { get async }
+
+    func mixer(_ mixer: MediaMixer, didOutput sampleBuffer: CMSampleBuffer)
+    func mixer(_ mixer: MediaMixer, didOutput buffer: AVAudioPCMBuffer, when: AVAudioTime)
+    func selectTrack(_ id: UInt8?, mediaType: CMFormatDescription.MediaType) async
+}
+```
+
+The mixer routes each buffer to outputs whose `videoTrackId` or `audioTrackId` matches the buffer's track number. `UInt8.max` is a wildcard that receives the composited (post-mix) output.
+
+## Preview Rendering with MTHKView
+
+`MTHKView` is a Metal-backed `MTKView` that already conforms to both `MediaMixerOutput` and `StreamOutput`, so attaching it is a one-liner:
+
+```swift
+let previewView = MTHKView(frame: view.bounds)
+previewView.videoGravity = .resizeAspectFill
+
+// Receive the mixed video directly from the mixer
+await mixer.addOutput(previewView)
+await mixer.startRunning()
+```
+
+<Tip>
+  `MTHKView` also conforms to `StreamOutput`, so you can point it at a playback stream instead of the mixer for remote preview.
+</Tip>
+
+## Complete Setup Example
+
+```swift
+import AVFoundation
+import HaishinKit
+
+final class BroadcastController {
+    private let mixer = MediaMixer()
+
+    func setup() async {
+        // 1. Attach devices
+        do {
+            try await mixer.attachAudio(AVCaptureDevice.default(for: .audio))
+        } catch {
+            print("Audio attach failed:", error)
+        }
+
+        do {
+            try await mixer.attachVideo(
+                AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back)
+            )
+        } catch {
+            print("Video attach failed:", error)
+        }
+
+        // 2. Configure output settings
+        mixer.setVideoMixerSettings(VideoMixerSettings(mode: .offscreen))
+        mixer.setAudioMixerSettings(AudioMixerSettings(sampleRate: 44100, channels: 2))
+
+        // 3. Register outputs
+        await mixer.addOutput(rtmpStream)
+
+        // 4. Start
+        await mixer.startRunning()
+    }
+}
+```

@@ -1,0 +1,67 @@
+---
+title: "HaishinKit: camera and microphone streaming SDK"
+description: "HaishinKit is a Swift SDK for live streaming via RTMP, SRT, WHIP/WHEP, and MoQT on Apple platforms. Learn about its modules, features, and requirements."
+---
+
+HaishinKit is a Swift library for building live streaming applications on Apple platforms. It provides publish and playback functionality over RTMP, SRT, WHIP/WHEP, and MoQT protocols, with a unified `MediaMixer` API for camera, microphone, and screen capture inputs. Built for Swift 6 strict concurrency, HaishinKit has been in active development since 2015 with over 2,700 commits and 163 releases.
+
+## Modules
+
+HaishinKit is organized into five focused modules. You only import the ones your app needs.
+
+| Module | Description |
+|---|---|
+| `HaishinKit` | Core module. Provides camera and microphone mixing, `MediaMixer`, video mixing, and the shared `StreamSession` API. Required by all other modules. |
+| `RTMPHaishinKit` | RTMP protocol stack. Supports H.264, HEVC, AAC, and OPUS. Includes RTMPS, Enhanced RTMP, SharedObject, and FMLE-compatible authentication. |
+| `SRTHaishinKit` | SRT protocol stack built on [libsrt](https://github.com/Haivision/srt). Supports H.264, HEVC, and AAC in caller, listener, and rendezvous modes. Not available for Mac Catalyst. |
+| `RTCHaishinKit` | WHIP/WHEP protocol stack built on [libdatachannel](https://github.com/paullouisageneau/libdatachannel). Supports H.264 and OPUS. Currently in alpha. |
+| `MoQTHaishinKit` | MoQT protocol stack based on draft7. Currently in development for research and testing; live streaming features are not yet implemented. |
+
+## Platform requirements
+
+| Platform | Minimum version |
+|---|---|
+| iOS | 15.0+ |
+| tvOS | 15.0+ |
+| Mac Catalyst | 15.0+ |
+| macOS | 12.0+ |
+| visionOS | 1.0+ |
+
+<Note>
+  SRTHaishinKit is not available for Mac Catalyst. Development requires Xcode 16.4+ and Swift 6.0+.
+</Note>
+
+## Key features
+
+<CardGroup cols={2}>
+  <Card title="Multi-protocol streaming" icon="tower-broadcast">
+    Publish and play back streams over RTMP, SRT, WHIP/WHEP, and MoQT. The unified `StreamSession` API handles retry logic automatically across protocols.
+  </Card>
+  <Card title="MediaMixer" icon="sliders">
+    A single `MediaMixer` instance manages camera, microphone, and screen capture inputs and routes mixed output to one or more stream connections simultaneously.
+  </Card>
+  <Card title="Multi-camera support" icon="camera">
+    Access multiple cameras concurrently using iPad multitasking camera APIs, enabling picture-in-picture and multi-angle capture in a single stream.
+  </Card>
+  <Card title="Multi-streaming" icon="signal-stream">
+    Broadcast to multiple streaming services at the same time from a single `MediaMixer`, with live preview for verifying raw video output.
+  </Card>
+  <Card title="Video mixing" icon="layer-group">
+    Overlay text, images, and other video sources on your stream in real time. Useful for watermarks, on-screen graphics, and time displays during both publishing and playback.
+  </Card>
+  <Card title="Screen capture" icon="desktop">
+    Capture and stream your screen using ReplayKit on iOS or ScreenCaptureKit on macOS.
+  </Card>
+  <Card title="Swift strict concurrency" icon="lock">
+    Fully compliant with Swift 6 strict concurrency. All APIs use `async/await` and `actor` isolation for safe, race-condition-free media pipelines.
+  </Card>
+  <Card title="Enhanced RTMP" icon="bolt">
+    RTMPHaishinKit supports Enhanced RTMP (E-RTMP) for higher-quality video transport beyond the capabilities of classic RTMP.
+  </Card>
+</CardGroup>
+
+## Next steps
+
+<Card title="Get started with HaishinKit" icon="rocket" href="/quickstart">
+  Follow the quickstart guide to install HaishinKit, configure permissions, and publish your first RTMP stream in minutes.
+</Card>

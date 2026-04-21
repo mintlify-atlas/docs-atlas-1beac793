@@ -1,0 +1,156 @@
+---
+title: 'Media over QUIC Transport with MoQTHaishinKit'
+description: 'Learn how to connect, announce, and subscribe to tracks using MoQTHaishinKit, a Swift implementation of the Media over QUIC Transport protocol stack.'
+---
+
+MoQTHaishinKit is the Media over QUIC Transport (MoQT) protocol stack for HaishinKit. It provides a Swift-native implementation of the MoQT protocol using QUIC as the underlying transport, enabling low-latency live media delivery over a publish/subscribe model.
+
+<Warning>
+MoQTHaishinKit is in **alpha**. APIs may change between releases. It is not recommended for production use.
+</Warning>
+
+## Overview
+
+MoQT organizes media delivery around namespaced tracks. Publishers announce track namespaces and send media objects. Subscribers discover namespaces and subscribe to individual tracks. All control messages are exchanged over a QUIC stream; media objects are delivered as QUIC datagrams.
+
+MoQTHaishinKit currently implements:
+
+- **Protocol version**: draft-07-exp2 (`0xff070002`)
+- **Default port**: `4433`
+- **Roles**: publisher (`0x01`), subscriber (`0x02`), pub/sub (`0x03`)
+- **Control messages**: `SETUP`, `ANNOUNCE`, `SUBSCRIBE`, `SUBSCRIBE_ANNOUNCES`, and their response variants
+- **Data delivery**: `STREAM_HEADER_SUBGROUP` datagrams via `MoQTObject`
+
+## Supported protocol versions
+
+| Version | Identifier |
+|---|---|
+| draft-07-exp2 (active) | `0xff070002` |
+| draft-01 through draft-07 | Earlier versions are defined but not used by default |
+
+## Connect to a MoQT server
+
+Create a `MoQTConnection` with the desired role and call `connect(_:)` with a `moqt://` URL.
+
+```swift
+import MoQTHaishinKit
+
+let connection = MoQTConnection(.subscriber)
+
+Task {
+  do {
+    let serverSetup = try await connection.connect("moqt://host:4433/path")
+    print("Connected. Server setup:", serverSetup)
+  } catch MoQTConnection.Error.connectionTimedOut {
+    print("Connection timed out")
+  } catch MoQTConnection.Error.socketErrorOccurred(let error) {
+    print("Socket error:", error)
+  } catch {
+    print(error)
+  }
+}
+```
+
+The `connect` method performs the QUIC handshake and the MoQT `CLIENT_SETUP` / `SERVER_SETUP` exchange. It returns a `MoQTServerSetup` value on success.
+
+<Note>
+The URL scheme must be `moqt`. Any other scheme throws `MoQTConnection.Error.unsupportedCommand`.
+</Note>
+
+## Announce a track namespace (publisher)
+
+Use `announce(_:authInfo:)` to advertise a namespace to the server. The server responds with either `ANNOUNCE_OK` or `ANNOUNCE_ERROR`.
+
+```swift
+let result = try await connection.announce(["example", "live"], authInfo: nil)
+
+switch result {
+case .success(let ok):
+  print("Announce accepted:", ok)
+case .failure(let error):
+  print("Announce rejected:", error)
+}
+```
+
+## Subscribe to a track (subscriber)
+
+Use `subscribe(_:name:authInfo:)` to request a specific track within a namespace. The server responds with `SUBSCRIBE_OK` or `SUBSCRIBE_ERROR`.
+
+```swift
+let result = try await connection.subscribe(
+  ["example", "live"],
+  name: "video",
+  authInfo: nil
+)
+
+switch result {
+case .success(let ok):
+  print("Subscribed:", ok)
+case .failure(let error):
+  print("Subscribe failed:", error)
+}
+```
+
+## Subscribe to namespace announcements
+
+Use `subscribeAnnounces(_:authInfo:)` to receive announcements for all tracks under a namespace prefix.
+
+```swift
+let result = try await connection.subscribeAnnounces(["example"], authInfo: nil)
+
+switch result {
+case .success(let ok):
+  print("Subscribed to announces:", ok)
+case .failure(let error):
+  print("Subscribe announces failed:", error)
+}
+```
+
+## Receive media objects
+
+After subscribing, consume incoming `MoQTObject` values from the `objectStream` async stream.
+
+```swift
+for await object in await connection.objectStream {
+  // process incoming media object
+  print("Received object:", object)
+}
+```
+
+## Send media objects (publisher)
+
+Send a batch of `MoQTObject` values with a `MoQTStreamHeaderSubgroup` header.
+
+```swift
+let header = MoQTStreamHeaderSubgroup(/* ... */)
+let objects: [MoQTObject] = [/* ... */]
+
+try await connection.send(objects, header: header)
+```
+
+## Close the connection
+
+```swift
+await connection.close()
+```
+
+## Error reference
+
+| Error | Description |
+|---|---|
+| `invalidState` | The connection is in an unexpected internal state. |
+| `unsupportedCommand` | The URI scheme is not `moqt`, or a command is not implemented. |
+| `connectionTimedOut` | The connection attempt exceeded the timeout. |
+| `socketErrorOccurred` | A general QUIC socket error occurred. |
+| `requestTimedOut` | A control message response was not received within the timeout window. |
+| `unknownResponse` | The server responded with an unrecognized message type. |
+
+## Alpha status
+
+MoQTHaishinKit is under active development. Known limitations at this stage:
+
+- Media encoding and pipeline integration (equivalent to `MediaMixer` in RTMP/SRT) is not yet implemented.
+- Only draft-07-exp2 is negotiated by default.
+- Not recommended for production deployments.
+
+Watch the [HaishinKit.swift repository](https://github.com/shogo4405/HaishinKit.swift) for updates on stability and feature additions.

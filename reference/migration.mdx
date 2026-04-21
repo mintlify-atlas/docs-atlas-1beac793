@@ -1,0 +1,133 @@
+---
+title: 'Migration guide for HaishinKit upgrades'
+description: 'Migrate HaishinKit apps to v2.x: Swift 6 strict concurrency, async/await APIs, MediaMixer actor isolation, and the unified StreamSession interface.'
+---
+
+HaishinKit v2.x introduced Swift 6 strict concurrency compliance, which brings breaking changes to nearly every public API. This guide covers the key migration steps, requirement changes across versions, and the new patterns you should adopt.
+
+For the full version-by-version migration notes, see the [official migration wiki](https://github.com/HaishinKit/HaishinKit.swift/wiki#-migration-guide).
+
+## Version requirements
+
+| HaishinKit version | Xcode | Swift |
+|---|---|---|
+| 2.2.0+ | 26.0+ | 6.0+ |
+| 2.1.0+ | 16.4+ | 6.0+ |
+
+**Minimum OS targets (all versions):** iOS 15, tvOS 15, Mac Catalyst 15, macOS 12, visionOS 1.
+
+<Note>
+  SRTHaishinKit is not available on Mac Catalyst.
+</Note>
+
+## Swift 6 strict concurrency
+
+All packages in the repository are compiled with `swift-tools-version:6.0` and `swiftLanguageModes: [.v6, .v5]`. The package enables `ExistentialAny` across all targets.
+
+If your app target is still on Swift 5 language mode, you can import HaishinKit without enabling strict concurrency in your own code. However, to use the library in full Swift 6 mode you must resolve sendability and actor isolation warnings in any code that calls into HaishinKit's public APIs.
+
+## `MediaMixer` is an actor
+
+`MediaMixer` is declared as a Swift `actor`. All property access and method calls must be performed with `await`, and you cannot pass a `MediaMixer` reference across actor boundaries without explicit isolation handling.
+
+```swift
+// Before (not valid in Swift 6 strict mode)
+mixer.startRunning()
+
+// After
+await mixer.startRunning()
+```
+
+Any closure or callback that interacts with `MediaMixer` must also be `async` or dispatched through a `Task`:
+
+```swift
+Task {
+    await mixer.attachVideo(device, track: 0)
+    await mixer.startRunning()
+}
+```
+
+The `screen` property on `MediaMixer` is isolated to the custom `@ScreenActor` global actor. Access it only from a `@ScreenActor`-isolated context or inside a `Task { @ScreenActor in ... }` block.
+
+## `RTMPConnection` and `RTMPStream` are actors
+
+Both `RTMPConnection` and `RTMPStream` are Swift actors. All connection, publishing, and configuration methods are `async throws`:
+
+```swift
+// Connecting
+let connection = RTMPConnection()
+try await connection.connect("rtmp://ingest.example.com/live")
+
+// Publishing
+let stream = RTMPStream(connection: connection)
+try await stream.publish("myStreamKey")
+
+// Closing
+try await connection.close()
+```
+
+Connection status is delivered via an `AsyncStream<RTMPStatus>`:
+
+```swift
+Task {
+    for await status in await connection.status {
+        print(status.code)
+    }
+}
+```
+
+## `StreamSession` — the recommended unified API
+
+`StreamSession` is a protocol-based abstraction over the underlying transport (RTMP, SRT, WebRTC). It provides a single, consistent interface regardless of protocol and handles reconnection internally.
+
+```swift
+// Register the appropriate factory first (e.g. RTMPSessionFactory, SRTSessionFactory)
+await StreamSessionBuilderFactory.shared.register(RTMPSessionFactory())
+
+// Build a session for the appropriate protocol via the shared factory
+let session = try await StreamSessionBuilderFactory.shared
+    .make(URL(string: "rtmp://ingest.example.com/live/my-key"))
+    .setMode(.publish)
+    .build()
+
+// Configure retry behaviour
+session?.setMaxRetryCount(3)
+
+// Connect with a disconnection handler
+try await session?.connect {
+    // called when the session closes unexpectedly
+}
+```
+
+Use `StreamSession` in new code instead of instantiating `RTMPConnection` + `RTMPStream` directly where possible. The unified API reduces the boilerplate required to handle reconnection, state observation, and multi-protocol support.
+
+## `StreamRecorder` is an actor
+
+`StreamRecorder` is also a Swift actor. It can be added as an output to either `MediaMixer` or a stream:
+
+```swift
+let recorder = StreamRecorder()
+
+// Record directly from the mixer
+await mixer.addOutput(recorder)
+
+// Or record the stream output
+await stream.addOutput(recorder)
+
+// Start/stop recording
+try await recorder.startRecording(url: outputURL)
+try await recorder.stopRecording()
+```
+
+## Summary of breaking changes
+
+| Area | v1.x | v2.x |
+|---|---|---|
+| `MediaMixer` | Class | `actor` — all calls need `await` |
+| `RTMPConnection` | Class with callbacks | `actor` — `async throws` methods |
+| `RTMPStream` | Class | `actor` — `async throws` methods |
+| `StreamRecorder` | Class | `actor` — `async throws` methods |
+| Status events | Callback/delegate | `AsyncStream<RTMPStatus>` |
+| Multi-streaming | Manual | `mixer.addOutput(_:)` observer pattern |
+| Codec settings | Mutating properties | Value types (`VideoCodecSettings`, `AudioCodecSettings`) |
+| ReplayKit integration | Custom session bridge | `captureSessionMode: .manual` + `mixer.append(_:)` |

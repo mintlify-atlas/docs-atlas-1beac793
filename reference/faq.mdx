@@ -1,0 +1,170 @@
+---
+title: 'Frequently asked questions about HaishinKit'
+description: 'Answers to common HaishinKit questions: video and audio settings, RTMP compatibility, connection errors, capture session modes, background streaming, and multi-destination output.'
+---
+
+HaishinKit covers a broad surface area — from codec configuration to multi-camera capture and concurrent streaming destinations. This page answers the questions that come up most frequently, based directly on the library's source code.
+
+<AccordionGroup>
+  <Accordion title="Is it possible to use a UVC camera?">
+    Yes. Starting with iPadOS 17.0, external USB cameras became available through the AVFoundation [external device type](https://developer.apple.com/documentation/avfoundation/avcapturedevice/devicetype-swift.struct/external) API. Operation on iPhone has not been confirmed.
+
+    ```swift
+    if #available(iOS 17.0, *) {
+        let camera = AVCaptureDevice.default(.external, for: .video, position: .unspecified)
+        try? await mixer.attachVideo(camera, track: 0)
+    }
+    ```
+
+    <Note>
+      The external device type is only available on iPadOS 17.0 and later. Wrap all usage in an availability check.
+    </Note>
+  </Accordion>
+
+  <Accordion title="How do I set the video resolution and bitrate?">
+    Pass a `VideoCodecSettings` value to your stream. The defaults are 854×480 at 640 kbps using H.264 Baseline 3.1.
+
+    ```swift
+    // 1280×720 at 2 Mbps, H.264 High profile
+    var settings = VideoCodecSettings(
+        videoSize: CGSize(width: 1280, height: 720),
+        bitRate: 2_000_000,
+        profileLevel: kVTProfileLevel_H264_High_4_1 as String
+    )
+
+    try stream.setVideoSettings(settings)
+    ```
+
+    `VideoCodecSettings` also exposes `bitRateMode` (`.average`, `.constant`, `.variable`), `maxKeyFrameIntervalDuration`, `scalingMode`, and `isLowLatencyRateControlEnabled` for fine-grained control. The bitrate can be changed at runtime without invalidating the encoder session.
+  </Accordion>
+
+  <Accordion title="How do I set the audio bitrate and format?">
+    Pass an `AudioCodecSettings` value to your stream. The default is AAC at 64 kbps.
+
+    ```swift
+    // 128 kbps AAC
+    let settings = AudioCodecSettings(
+        bitRate: 128_000,
+        format: .aac
+    )
+
+    try stream.setAudioSettings(settings)
+    ```
+
+    Supported formats are `.aac`, `.opus`, and `.pcm`. OPUS restricts the sample rate to one of 8 000, 12 000, 16 000, 24 000, or 48 000 Hz — HaishinKit automatically selects the closest supported value. Set `sampleRate` to `0` to match the input source rate.
+  </Accordion>
+
+  <Accordion title="What RTMP servers does HaishinKit support?">
+    HaishinKit supports the `rtmp://` and `rtmps://` schemes. It implements the Enhanced RTMP specification, including HEVC video over RTMP (`hvc1`) and Opus audio (`Opus`), via the `fourCcList` connect parameter.
+
+    If you are connecting to a server that does not support Enhanced RTMP, disable the enhanced parameters at init time:
+
+    ```swift
+    let connection = RTMPConnection(
+        fourCcList: nil,
+        videoFourCcInfoMap: nil,
+        audioFourCcInfoMap: nil,
+        capsEx: 0
+    )
+    ```
+
+    Common compatible servers include Nginx-RTMP, OBS' built-in server, AWS IVS, and most CDN ingest endpoints. Authentication (Adobe-style digest auth on `NetConnection.Connect.Rejected`) is handled automatically.
+  </Accordion>
+
+  <Accordion title="How do I handle connection errors and retries?">
+    Both `RTMPConnection` and the `StreamSession` protocol surface errors through Swift's `async/await` and `AsyncStream`. Observe the `status` stream to receive `RTMPStatus` events.
+
+    ```swift
+    let connection = RTMPConnection()
+
+    Task {
+        for await status in await connection.status {
+            switch status.code {
+            case RTMPConnection.Code.connectFailed.rawValue,
+                 RTMPConnection.Code.connectClosed.rawValue:
+                // schedule a reconnect
+                try? await Task.sleep(for: .seconds(3))
+                try? await connection.connect("rtmp://example.com/live")
+            default:
+                break
+            }
+        }
+    }
+
+    try await connection.connect("rtmp://example.com/live")
+    ```
+
+    The `StreamSession` API simplifies this further. Call `setMaxRetryCount(_:)` to configure automatic reconnection; the default internal maximum is 3 attempts.
+
+    ```swift
+    let session: any StreamSession = // built via StreamSessionBuilder
+    session.setMaxRetryCount(5)
+    try await session.connect { /* disconnected handler */ }
+    ```
+
+    The default TCP handshake timeout is 15 seconds (`RTMPConnection.defaultTimeout`). The per-request timeout is 3 000 ms (`RTMPConnection.defaultRequestTimeout`).
+  </Accordion>
+
+  <Accordion title="What is the difference between .single, .multi, and .manual capture session modes?">
+    The `MediaMixer.CaptureSessionMode` enum controls which underlying `AVCaptureSession` type is used:
+
+    | Mode | Underlying session | Use case |
+    |---|---|---|
+    | `.single` | `AVCaptureSession` | Single camera, standard capture |
+    | `.multi` | `AVCaptureMultiCamSession` | Multiple simultaneous cameras (iOS/tvOS 17+) |
+    | `.manual` | None (`NullCaptureSession`) | ReplayKit, external frame sources |
+
+    Pass the mode at `MediaMixer` initialisation time — it cannot be changed afterwards:
+
+    ```swift
+    // Standard single-camera setup
+    let mixer = MediaMixer(captureSessionMode: .single)
+
+    // Dual-camera (front + back simultaneously)
+    let mixer = MediaMixer(captureSessionMode: .multi)
+
+    // ReplayKit screen capture — no AVCaptureSession needed
+    let mixer = MediaMixer(captureSessionMode: .manual)
+    ```
+
+    Use `.manual` when your video source is ReplayKit or ScreenCaptureKit and you are providing `CMSampleBuffer` frames directly via `mixer.append(_:track:)`.
+  </Accordion>
+
+  <Accordion title="Is background streaming supported?">
+    Partially. On iOS and tvOS, `MediaMixer` automatically listens for `UIApplication.didEnterBackgroundNotification`. When the app moves to the background without multitasking camera access enabled, video capture is suspended and resumed when the app returns to the foreground. Audio capture continues uninterrupted.
+
+    To keep the camera running in the background (e.g. for picture-in-picture or multitasking), enable multitasking camera access in your app's capabilities. When `AVCaptureSession.isMultitaskingCameraAccessEnabled` is `true`, the mixer will not suspend video on backgrounding.
+
+    <Warning>
+      Background audio streaming requires a properly configured `AVAudioSession`. Make sure your session category supports background audio (e.g. `.playAndRecord` with the appropriate background mode in `Info.plist`).
+    </Warning>
+  </Accordion>
+
+  <Accordion title="Can I stream to multiple destinations simultaneously?">
+    Yes. `MediaMixer` implements an output observer pattern. Add multiple stream instances as outputs to fan out media to separate destinations.
+
+    ```swift
+    let mixer = MediaMixer()
+
+    // Two separate RTMP connections to different services
+    let connection1 = RTMPConnection()
+    let stream1 = RTMPStream(connection: connection1)
+
+    let connection2 = RTMPConnection()
+    let stream2 = RTMPStream(connection: connection2)
+
+    await mixer.addOutput(stream1)
+    await mixer.addOutput(stream2)
+
+    await mixer.startRunning()
+
+    try await connection1.connect("rtmp://ingest1.example.com/live")
+    try await connection2.connect("rtmp://ingest2.example.com/live")
+
+    try await stream1.publish("streamKey1")
+    try await stream2.publish("streamKey2")
+    ```
+
+    Each output receives the same encoded frames independently. Codec settings are configured per-stream, so each destination can use a different bitrate or resolution.
+  </Accordion>
+</AccordionGroup>

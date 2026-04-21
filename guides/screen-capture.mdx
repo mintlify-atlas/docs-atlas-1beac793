@@ -1,0 +1,186 @@
+---
+title: "Stream your screen with ReplayKit and ScreenCaptureKit"
+description: "Broadcast iOS screen content via ReplayKit or capture macOS screens with ScreenCaptureKit using MediaMixer in manual capture mode."
+---
+
+HaishinKit supports screen capture on both iOS (via ReplayKit) and macOS (via ScreenCaptureKit). Both approaches use `CaptureSessionMode.manual`, which tells `MediaMixer` to skip creating an `AVCaptureSession` entirely. Instead, you feed `CMSampleBuffer` objects directly into the mixer using the `append(_:track:)` API.
+
+## How manual mode works
+
+When you initialize `MediaMixer` with `captureSessionMode: .manual`, no `AVCaptureSession` is started. This is necessary for ReplayKit and ScreenCaptureKit because those frameworks own the capture pipeline and deliver buffers to your code via callbacks—they are incompatible with a separately running `AVCaptureSession`.
+
+```swift
+let mixer = MediaMixer(captureSessionMode: .manual, multiTrackAudioMixingEnabled: true)
+```
+
+Passing `multiTrackAudioMixingEnabled: true` is recommended for screen capture because ReplayKit provides two separate audio streams (microphone audio and app audio) that you will want to mix together.
+
+## iOS: ReplayKit broadcast extension
+
+ReplayKit delivers screen content inside a **Broadcast Upload Extension**. Create a new extension target in Xcode (`File > New > Target > Broadcast Upload Extension`) and implement `RPBroadcastSampleHandler`.
+
+<Steps>
+  <Step title="Create the mixer in manual mode">
+    Inside your `RPBroadcastSampleHandler` subclass, create a `MediaMixer` with `.manual` mode and multi-track audio enabled:
+
+    ```swift
+    import HaishinKit
+    import ReplayKit
+
+    final class SampleHandler: RPBroadcastSampleHandler, @unchecked Sendable {
+        private var mixer = MediaMixer(
+            captureSessionMode: .manual,
+            multiTrackAudioMixingEnabled: true
+        )
+        private var session: StreamSession?
+    }
+    ```
+  </Step>
+
+  <Step title="Start the session when broadcast begins">
+    Connect to your streaming endpoint in `broadcastStarted(withSetupInfo:)` and start the mixer:
+
+    ```swift
+    override func broadcastStarted(withSetupInfo setupInfo: [String: NSObject]?) {
+        Task {
+            session = try await StreamSessionBuilderFactory.shared
+                .make(yourStreamURL)
+                .build()
+
+            // Passthrough is recommended for ReplayKit to minimise memory use
+            var videoSettings = await mixer.videoMixerSettings
+            videoSettings.mode = .passthrough
+            await mixer.setVideoMixerSettings(videoSettings)
+
+            // Limit the video input buffer queue to reduce memory pressure
+            await session?.stream.setVideoInputBufferCounts(5)
+
+            await mixer.startRunning()
+            if let session {
+                await mixer.addOutput(session.stream)
+                try? await session.connect { }
+            }
+        }
+    }
+    ```
+
+    <Warning>
+      ReplayKit extensions run in a memory-constrained process. Keep the video input buffer count low (5 is a safe starting point) to avoid OOM termination.
+    </Warning>
+  </Step>
+
+  <Step title="Forward sample buffers to the mixer">
+    ReplayKit calls `processSampleBuffer(_:with:)` for every video frame and audio packet. Append each buffer to the appropriate track:
+
+    ```swift
+    override func processSampleBuffer(
+        _ sampleBuffer: CMSampleBuffer,
+        with sampleBufferType: RPSampleBufferType
+    ) {
+        switch sampleBufferType {
+        case .video:
+            // Video has only one track
+            Task { await mixer.append(sampleBuffer) }
+
+        case .audioMic:
+            // Microphone audio on track 0
+            if sampleBuffer.dataReadiness == .ready {
+                Task { await mixer.append(sampleBuffer, track: 0) }
+            }
+
+        case .audioApp:
+            // App audio on track 1
+            if sampleBuffer.dataReadiness == .ready {
+                Task { await mixer.append(sampleBuffer, track: 1) }
+            }
+
+        @unknown default:
+            break
+        }
+    }
+    ```
+  </Step>
+</Steps>
+
+### Mixing app audio and microphone audio
+
+Because `multiTrackAudioMixingEnabled` is `true`, tracks 0 and 1 are mixed together before encoding. You can adjust per-track volume at runtime via `AudioMixerSettings`:
+
+```swift
+// Lower app audio to 50% of its original level
+var audioSettings = await mixer.audioMixerSettings
+audioSettings.tracks[1] = AudioMixerTrackSettings(volume: 0.5)
+await mixer.setAudioMixerSettings(audioSettings)
+```
+
+### Video encoder configuration for screen content
+
+ReplayKit delivers variable-resolution buffers whose dimensions depend on the device screen size. Read the dimensions from the first video buffer and update the encoder settings accordingly:
+
+```swift
+case .video:
+    Task {
+        if needVideoConfiguration, let dimensions = sampleBuffer.formatDescription?.dimensions {
+            var videoSettings = await session?.stream.videoSettings
+            videoSettings?.videoSize = .init(
+                width: CGFloat(dimensions.width),
+                height: CGFloat(dimensions.height)
+            )
+            videoSettings?.profileLevel = kVTProfileLevel_H264_Baseline_AutoLevel as String
+            if let videoSettings {
+                try? await session?.stream.setVideoSettings(videoSettings)
+            }
+            needVideoConfiguration = false
+        }
+        await mixer.append(sampleBuffer)
+    }
+```
+
+## macOS: ScreenCaptureKit
+
+On macOS, use `SCStreamOutput` from ScreenCaptureKit to receive screen content and forward the buffers to a `MediaMixer` in manual mode. The approach mirrors the ReplayKit pattern: create the mixer with `.manual`, start your `SCStream`, and call `mixer.append(_:track:)` in your stream output callback.
+
+```swift
+import HaishinKit
+import ScreenCaptureKit
+
+let mixer = MediaMixer(captureSessionMode: .manual)
+
+// In your SCStreamOutput.stream(_:didOutputSampleBuffer:of:) callback:
+func stream(
+    _ stream: SCStream,
+    didOutputSampleBuffer sampleBuffer: CMSampleBuffer,
+    of type: SCStreamOutputType
+) {
+    switch type {
+    case .screen:
+        Task { await mixer.append(sampleBuffer, track: 0) }
+    case .audio:
+        Task { await mixer.append(sampleBuffer, track: 0) }
+    @unknown default:
+        break
+    }
+}
+```
+
+<Note>
+  ScreenCaptureKit requires the `com.apple.security.screen-recording` entitlement and user consent via `SCShareableContent.getExcludingDesktopWindows(_:onScreenWindowsOnly:completionHandler:)`.
+</Note>
+
+## Appending buffers manually
+
+Both platforms ultimately rely on the same `MediaMixer` API. The method signature is:
+
+```swift
+// Append any CMSampleBuffer (video or audio) — mediaType is detected automatically
+func append(_ sampleBuffer: CMSampleBuffer, track: UInt8 = 0)
+
+// Append a raw AVAudioBuffer with its presentation timestamp
+func append(_ audioBuffer: AVAudioBuffer, when: AVAudioTime, track: UInt8 = 0)
+```
+
+The mixer inspects `sampleBuffer.formatDescription?.mediaType` to route each buffer to either the video or audio pipeline automatically.
+
+<Warning>
+  Do not call `startCapturing()` or `stopCapturing()` when using `.manual` mode—those methods control the `AVCaptureSession`, which is absent in this mode. Call `startRunning()` and `stopRunning()` instead.
+</Warning>

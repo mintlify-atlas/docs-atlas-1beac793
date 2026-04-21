@@ -1,80 +1,172 @@
 ---
-title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+title: "Get started with HaishinKit"
+description: "Publish your first live stream with HaishinKit. Install the SDK, configure AVAudioSession, create a MediaMixer, attach camera and microphone, then connect via RTMP."
 ---
 
-## Get started in three steps
+This guide walks you through setting up a complete RTMP publish stream on iOS using HaishinKit. You will install the package, configure the required system permissions, create a `MediaMixer` to manage camera and microphone inputs, and connect to an RTMP server to start publishing.
 
-Get your documentation site running locally and make your first customization.
+<Steps>
+  <Step title="Install HaishinKit">
+    Add HaishinKit to your Xcode project using Swift Package Manager.
 
-### Step 1: Set up your local environment
+    In Xcode, go to **File → Add Package Dependencies** and enter the repository URL:
 
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
-    
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
-    
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
+    ```
+    https://github.com/HaishinKit/HaishinKit.swift
+    ```
 
-### Step 2: Deploy your changes
+    When prompted to choose package products, select **RTMPHaishinKit** (which automatically pulls in the **HaishinKit** core). See the [installation guide](/installation) for a full description of all available modules.
+  </Step>
 
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
-    
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
+  <Step title="Add Info.plist permission keys">
+    HaishinKit accesses the camera and microphone, so your app must declare usage descriptions in `Info.plist`. Add the following keys:
 
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
+    ```xml
+    <key>NSCameraUsageDescription</key>
+    <string>your usage description here</string>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>your usage description here</string>
+    ```
 
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
+    <Warning>
+      Apple will reject your app from the App Store if these keys are missing. The strings are shown to users in the system permission dialog, so make them meaningful.
+    </Warning>
+  </Step>
 
-### Step 3: Go live
+  <Step title="Configure AVAudioSession">
+    On iOS, you must configure and activate `AVAudioSession` before HaishinKit can capture audio. Call this early in your app's lifecycle — for example, in `application(_:didFinishLaunchingWithOptions:)` or your view's `onAppear`:
 
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
+    ```swift
+    import AVFoundation
 
-## Next steps
+    let session = AVAudioSession.sharedInstance()
+    do {
+        try session.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .allowBluetooth])
+        try session.setActive(true)
+    } catch {
+        print(error)
+    }
+    ```
 
-Now that you have your docs running, explore these key features:
+    <Note>
+      The `.playAndRecord` category allows simultaneous capture and playback. `.allowBluetooth` enables Bluetooth headsets as an audio input source.
+    </Note>
+  </Step>
 
-<CardGroup cols={2}>
+  <Step title="Create a MediaMixer and attach devices">
+    `MediaMixer` is the core of HaishinKit's media pipeline. It manages camera and microphone inputs and routes mixed output to one or more stream connections.
 
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
+    ```swift
+    import HaishinKit
+    import RTMPHaishinKit
+    import AVFoundation
 
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
+    let mixer = MediaMixer()
+    let connection = RTMPConnection()
+    let stream = RTMPStream(connection: connection)
 
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
+    Task {
+        do {
+            // Attach the default microphone
+            try await mixer.attachAudio(AVCaptureDevice.default(for: .audio))
+        } catch {
+            print(error)
+        }
 
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
+        do {
+            // Attach the back wide-angle camera
+            try await mixer.attachVideo(AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back))
+        } catch {
+            print(error)
+        }
 
-</CardGroup>
+        // Route mixed output to the RTMP stream
+        await mixer.addOutput(stream)
+    }
+    ```
+  </Step>
+
+  <Step title="Display a live preview">
+    Use `MTHKView` to render the stream's video in your view hierarchy. Add it to your view before connecting so you can see a live preview from the camera.
+
+    ```swift
+    let hkView = MTHKView(frame: view.bounds)
+
+    Task { @MainActor in
+        await stream.addOutput(hkView)
+        // Add the view to your view controller's view
+        view.addSubview(hkView)
+    }
+    ```
+  </Step>
+
+  <Step title="Connect and publish via RTMP">
+    Connect to your RTMP server and begin publishing. Replace `localhost/appName/instanceName` with your server's address and `streamName` with your actual stream key.
+
+    ```swift
+    Task {
+        do {
+            try await connection.connect("rtmp://localhost/appName/instanceName")
+            try await stream.publish(streamName)
+        } catch RTMPConnection.Error.requestFailed(let response) {
+            print(response)
+        } catch RTMPStream.Error.requestFailed(let response) {
+            print(response)
+        } catch {
+            print(error)
+        }
+    }
+    ```
+
+    <Tip>
+      To use RTMPS (RTMP over TLS), replace `rtmp://` with `rtmps://` in the connection URL. No other changes are required.
+    </Tip>
+  </Step>
+</Steps>
+
+## Playback example
+
+To play back an RTMP stream, create a connection and stream, attach an `AudioPlayer`, then call `play` instead of `publish`:
+
+```swift
+import HaishinKit
+import RTMPHaishinKit
+import AVFoundation
+
+let connection = RTMPConnection()
+let stream = RTMPStream(connection: connection)
+let audioPlayer = AudioPlayer(AVAudioEngine())
+let hkView = MTHKView(frame: view.bounds)
+
+Task { @MainActor in
+    await stream.addOutput(hkView)
+}
+
+Task {
+    // AudioPlayer must be attached before connecting
+    await stream.attachAudioPlayer(audioPlayer)
+
+    do {
+        try await connection.connect("rtmp://localhost/appName/instanceName")
+        try await stream.play(streamName)
+    } catch RTMPConnection.Error.requestFailed(let response) {
+        print(response)
+    } catch RTMPStream.Error.requestFailed(let response) {
+        print(response)
+    } catch {
+        print(error)
+    }
+}
+```
 
 <Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
+  `AudioPlayer` wraps `AVAudioEngine` and must be attached to the stream before you call `connect`. If you skip this step, playback audio will be silent.
 </Note>
+
+## Connecting with authentication
+
+For RTMP servers that require FMLE-compatible authentication, include credentials directly in the connection URL:
+
+```swift
+connection.connect("rtmp://username:password@localhost/appName/instanceName")
+```

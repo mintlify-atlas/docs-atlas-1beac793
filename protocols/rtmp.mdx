@@ -1,0 +1,295 @@
+---
+title: 'Stream with RTMP using RTMPHaishinKit'
+description: 'Learn how to publish and play live streams over RTMP and RTMPS using RTMPHaishinKit, with support for H.264, HEVC, AAC, OPUS, SharedObject, and Enhanced RTMP.'
+---
+
+RTMPHaishinKit is the RTMP protocol stack for HaishinKit. It provides a Swift-native implementation of RTMP and RTMPS, handling connection management, stream publishing, playback, authentication, and Enhanced RTMP extensions for modern codecs like HEVC and OPUS.
+
+## Features
+
+<CardGroup cols={2}>
+  <Card title="Codecs" icon="film">
+    Publish with H.264, HEVC, AAC, and OPUS. Playback with H.264, HEVC, and AAC.
+  </Card>
+  <Card title="Authentication" icon="lock">
+    FMLE-compatible authentication via username and password in the connection URL.
+  </Card>
+  <Card title="RTMPS" icon="shield">
+    Native RTMP over SSL/TLS using the `rtmps://` scheme on port 443.
+  </Card>
+  <Card title="SharedObject" icon="database">
+    Read and write shared data on a server in real time using `RTMPSharedObject`.
+  </Card>
+  <Card title="Enhanced RTMP" icon="bolt">
+    Extended codec support via the Veovera Enhanced RTMP specification, including HEVC publish/playback and OPUS publish.
+  </Card>
+  <Card title="AMF0 Encoding" icon="code">
+    Action Message Format 0 (AMF0) for command and data encoding.
+  </Card>
+</CardGroup>
+
+## Publish a live stream
+
+<Steps>
+  <Step title="Set up the objects">
+    Create a `MediaMixer`, `RTMPConnection`, `RTMPStream`, and a view to preview the camera output.
+
+    ```swift
+    let mixer = MediaMixer()
+    let connection = RTMPConnection()
+    let stream = RTMPStream(connection: connection)
+    let hkView = MTHKView(frame: view.bounds)
+    ```
+  </Step>
+  <Step title="Attach camera and microphone">
+    Attach an audio and video capture device to the mixer.
+
+    ```swift
+    Task {
+      do {
+        try await mixer.attachAudio(AVCaptureDevice.default(for: .audio))
+      } catch {
+        print(error)
+      }
+
+      do {
+        try await mixer.attachVideo(
+          AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back)
+        )
+      } catch {
+        print(error)
+      }
+
+      await mixer.addOutput(stream)
+    }
+    ```
+  </Step>
+  <Step title="Add the preview view">
+    Add the stream's output view to your view hierarchy on the main actor.
+
+    ```swift
+    Task { @MainActor in
+      await stream.addOutput(hkView)
+      view.addSubview(hkView)
+    }
+    ```
+  </Step>
+  <Step title="Connect and publish">
+    Connect to your RTMP server and start publishing.
+
+    ```swift
+    Task {
+      do {
+        try await connection.connect("rtmp://localhost/appName/instanceName")
+        try await stream.publish(streamName)
+      } catch RTMPConnection.Error.requestFailed(let response) {
+        print(response)
+      } catch RTMPStream.Error.requestFailed(let response) {
+        print(response)
+      } catch {
+        print(error)
+      }
+    }
+    ```
+  </Step>
+</Steps>
+
+## Play a live stream
+
+<Steps>
+  <Step title="Set up the objects">
+    Create an `RTMPConnection`, `RTMPStream`, an `AudioPlayer` for audio output, and a view for video rendering.
+
+    ```swift
+    let connection = RTMPConnection()
+    let stream = RTMPStream(connection: connection)
+    let audioPlayer = AudioPlayer(AVAudioEngine())
+    let hkView = MTHKView(frame: view.bounds)
+    ```
+  </Step>
+  <Step title="Add the output view">
+    ```swift
+    Task { @MainActor in
+      await stream.addOutput(hkView)
+    }
+    ```
+  </Step>
+  <Step title="Connect and play">
+    Attach the audio player and start playback. The audio player must be attached before calling `play`.
+
+    ```swift
+    Task {
+      await stream.attachAudioPlayer(audioPlayer)
+
+      do {
+        try await connection.connect("rtmp://localhost/appName/instanceName")
+        try await stream.play(streamName)
+      } catch RTMPConnection.Error.requestFailed(let response) {
+        print(response)
+      } catch RTMPStream.Error.requestFailed(let response) {
+        print(response)
+      } catch {
+        print(error)
+      }
+    }
+    ```
+  </Step>
+</Steps>
+
+## Authentication
+
+RTMPHaishinKit supports FMLE-compatible authentication. Pass credentials directly in the connection URL using the `username:password@` format.
+
+```swift
+let connection = RTMPConnection()
+try await connection.connect("rtmp://username:password@localhost/appName/instanceName")
+```
+
+<Note>
+Some services use proprietary authentication methods that differ from the FMLE standard. Connection may not succeed in those cases.
+</Note>
+
+## SharedObject
+
+`RTMPSharedObject` lets you read and write key-value data that is synchronized across all connected clients via the server.
+
+```swift
+// Get a reference to a remote shared object
+let sharedObject = RTMPSharedObject.getRemote(
+  withName: "myObject",
+  remotePath: "rtmp://localhost/appName",
+  persistence: false
+)
+
+// Connect the shared object to an active RTMPConnection
+await sharedObject.connect(connection)
+
+// Write a value
+await sharedObject.setProperty("score", 42)
+
+// Clear all data
+await sharedObject.clear()
+
+// Disconnect
+await sharedObject.close()
+```
+
+## Enhanced RTMP
+
+[Enhanced RTMP](https://github.com/veovera/enhanced-rtmp/) is an extended standard developed by Veovera Software Organization that adds support for modern video and audio codecs.
+
+<Warning>
+Enhanced RTMP requires server-side support. Verify that your RTMP server supports the Enhanced RTMP specification before enabling these features.
+</Warning>
+
+By default, `RTMPConnection` advertises Enhanced RTMP capabilities in the connect command. If your server does not support Enhanced RTMP parameters, disable them at initialization:
+
+```swift
+let connection = RTMPConnection(
+  fourCcList: nil,
+  videoFourCcInfoMap: nil,
+  audioFourCcInfoMap: nil,
+  capsEx: 0
+)
+```
+
+### Support status
+
+**Enhanced RTMP v1**
+
+| Feature | Publish | Playback |
+|---|---|---|
+| HEVC | Supported | Supported |
+| VP9 | Not supported | Not supported |
+| AV1 | Planned | Planned |
+| Enhancing onMetaData | Supported | — |
+| Extending NetConnection connect | Supported | — |
+
+**Enhanced RTMP v2**
+
+| Feature | Publish | Playback |
+|---|---|---|
+| OPUS | Supported | Not supported |
+| VP8 | Not supported | Not supported |
+| AV1 (HDR) | Not supported | Not supported |
+| Enhancing NetConnection connect | Supported | — |
+
+<Note>
+AV1 support is planned once compatible hardware becomes available.
+</Note>
+
+## Publish and playback examples side by side
+
+<Tabs>
+  <Tab title="Publish">
+    ```swift
+    let mixer = MediaMixer()
+    let connection = RTMPConnection()
+    let stream = RTMPStream(connection: connection)
+    let hkView = MTHKView(frame: view.bounds)
+
+    Task {
+      do {
+        try await mixer.attachAudio(AVCaptureDevice.default(for: .audio))
+      } catch {
+        print(error)
+      }
+
+      do {
+        try await mixer.attachVideo(
+          AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back)
+        )
+      } catch {
+        print(error)
+      }
+
+      await mixer.addOutput(stream)
+    }
+
+    Task { @MainActor in
+      await stream.addOutput(hkView)
+      view.addSubview(hkView)
+    }
+
+    Task {
+      do {
+        try await connection.connect("rtmp://localhost/appName/instanceName")
+        try await stream.publish(streamName)
+      } catch RTMPConnection.Error.requestFailed(let response) {
+        print(response)
+      } catch RTMPStream.Error.requestFailed(let response) {
+        print(response)
+      } catch {
+        print(error)
+      }
+    }
+    ```
+  </Tab>
+  <Tab title="Playback">
+    ```swift
+    let connection = RTMPConnection()
+    let stream = RTMPStream(connection: connection)
+    let audioPlayer = AudioPlayer(AVAudioEngine())
+    let hkView = MTHKView(frame: view.bounds)
+
+    Task { @MainActor in
+      await stream.addOutput(hkView)
+    }
+
+    Task {
+      await stream.attachAudioPlayer(audioPlayer)
+
+      do {
+        try await connection.connect("rtmp://localhost/appName/instanceName")
+        try await stream.play(streamName)
+      } catch RTMPConnection.Error.requestFailed(let response) {
+        print(response)
+      } catch RTMPStream.Error.requestFailed(let response) {
+        print(response)
+      } catch {
+        print(error)
+      }
+    }
+    ```
+  </Tab>
+</Tabs>

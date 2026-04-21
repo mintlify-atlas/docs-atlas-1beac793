@@ -1,0 +1,102 @@
+{
+  "projectType": "sdk-library",
+  "projectName": "HaishinKit",
+  "projectDescription": "A Swift SDK for live streaming via RTMP, SRT, WHIP/WHEP, and MoQT protocols on iOS, macOS, tvOS, and visionOS.",
+  "theme": "luma",
+  "primaryColor": "#1A73E8",
+  "lightColor": "#E8F0FE",
+  "darkColor": "#0D47A1",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "installation"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/media-mixer",
+              "concepts/stream-session",
+              "concepts/video-mixing"
+            ]
+          },
+          {
+            "group": "Protocols",
+            "pages": [
+              "protocols/rtmp",
+              "protocols/srt",
+              "protocols/whip-whep",
+              "protocols/moqt"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "guides/multi-camera",
+              "guides/screen-capture",
+              "guides/audio-setup",
+              "guides/recording"
+            ]
+          },
+          {
+            "group": "Reference",
+            "pages": [
+              "reference/faq",
+              "reference/known-issues",
+              "reference/migration"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "RTMP publish and playback with FMLE-compatible authentication",
+    "SRT protocol support (caller, listener, rendezvous modes)",
+    "WHIP/WHEP WebRTC streaming (alpha)",
+    "MoQT protocol support (alpha)",
+    "Multi-camera capture via AVCaptureMultiCamSession",
+    "Video mixing with overlays, watermarks, and text via ScreenObjects",
+    "Audio mixing with multi-track support",
+    "ReplayKit and ScreenCaptureKit screen capture support",
+    "Swift strict concurrency (async/await) compliance",
+    "Enhanced RTMP support (HEVC, OPUS)",
+    "MTHKView and PiPHKView for video rendering",
+    "StreamSession unified API across protocols"
+  ],
+  "publicApiSurface": [
+    "MediaMixer",
+    "MediaMixer.attachVideo(_:track:configuration:)",
+    "MediaMixer.attachAudio(_:track:configuration:)",
+    "MediaMixer.startRunning()",
+    "MediaMixer.stopRunning()",
+    "MediaMixer.screen (Screen / ScreenObject)",
+    "RTMPConnection",
+    "RTMPStream",
+    "RTMPStream.publish(_:)",
+    "RTMPStream.play(_:)",
+    "SRTConnection",
+    "SRTStream",
+    "StreamSessionBuilderFactory",
+    "StreamSession",
+    "StreamRecorder",
+    "AudioPlayer",
+    "MTHKView",
+    "PiPHKView",
+    "ImageScreenObject",
+    "TextScreenObject",
+    "VideoTrackScreenObject",
+    "VideoEffect",
+    "AudioMixerSettings",
+    "VideoMixerSettings",
+    "VideoCodecSettings",
+    "AudioCodecSettings"
+  ]
+}

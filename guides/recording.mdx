@@ -1,0 +1,229 @@
+---
+title: "Record streams locally to a file with StreamRecorder"
+description: "Use StreamRecorder to save live video and audio to MP4 or MOV files on-device, either from MediaMixer output or directly from a stream."
+---
+
+`StreamRecorder` is a Swift actor that writes audio and video to a local file while you stream. It is compatible with both `MediaMixerOutput` and `StreamOutput`, meaning you can record the raw mixer output (before encoding), the encoded stream output, or both simultaneously. Files are saved as `.mp4` by default, with `.mov` also supported.
+
+## How StreamRecorder works
+
+`StreamRecorder` wraps `AVAssetWriter` and accepts `CMSampleBuffer` objects from either a `MediaMixer` or a `StreamConvertible` (e.g., an RTMP or SRT stream). It lazily creates `AVAssetWriterInput` tracks the first time a video or audio buffer arrives, so there is no need to pre-configure dimensions or sample rates—they are read automatically from the incoming format description.
+
+## Recording from MediaMixer
+
+Add the recorder as an output to `MediaMixer` to capture the mixer's output directly:
+
+```swift
+let recorder = StreamRecorder()
+let mixer = MediaMixer()
+
+await mixer.addOutput(recorder)
+```
+
+## Recording from a stream
+
+To record the encoded stream (post-encoding), add the recorder as an output to the stream instead:
+
+```swift
+let recorder = StreamRecorder()
+let mixer = MediaMixer()
+let connection = RTMPConnection()
+let stream = RTMPStream(connection: connection)
+
+await mixer.addOutput(stream)
+stream.addOutput(recorder)
+```
+
+<Note>
+  Recording from `MediaMixer` captures uncompressed PCM and raw video frames that `StreamRecorder` then re-encodes to H.264/AAC via `AVAssetWriter`. Recording from the stream captures the already-encoded data. Choose based on whether you need a lossless local copy or a space-efficient one.
+</Note>
+
+## Starting a recording
+
+Call `startRecording()` before or after `startRunning()` on the mixer. If no URL is provided, `StreamRecorder` generates a unique filename and places the file in the Documents directory on iOS or the Movies directory on macOS.
+
+```swift
+// Auto-generated filename: $documentDirectory/<UUID>.mp4
+try await recorder.startRecording()
+
+// Relative path resolved under Documents directory
+try await recorder.startRecording(URL(string: "session/stream.mp4"))
+
+// Absolute file URL
+let url = await recorder.moviesDirectory.appendingPathComponent("broadcast.mp4")
+try await recorder.startRecording(url)
+```
+
+<Warning>
+  `StreamRecorder` does **not** create intermediate directories. Ensure the target directory exists before calling `startRecording()`.
+</Warning>
+
+### Default output location
+
+| Platform | Default directory |
+|----------|------------------|
+| iOS / iPadOS | `NSSearchPathDirectory.documentDirectory` |
+| macOS | `NSSearchPathDirectory.moviesDirectory` |
+
+## Stopping a recording
+
+`stopRecording()` marks all writer inputs as finished, flushes the `AVAssetWriter`, and returns the `URL` of the completed file.
+
+```swift
+do {
+    let outputURL = try await recorder.stopRecording()
+    print("Saved to:", outputURL)
+} catch {
+    print("Recording failed:", error)
+}
+```
+
+### Save to the Photos library
+
+```swift
+do {
+    let outputURL = try await recorder.stopRecording()
+    try await PHPhotoLibrary.shared().performChanges {
+        let request = PHAssetCreationRequest.forAsset()
+        request.addResource(with: .video, fileURL: outputURL, options: nil)
+    }
+    // Optional: remove the local file after saving
+    try? FileManager.default.removeItem(at: outputURL)
+} catch {
+    print("Could not save to Photos:", error)
+}
+```
+
+## Custom recording settings
+
+Pass a `settings` dictionary to `startRecording()` to override codec, bitrate, or resolution. The default settings use H.264 video and AAC audio, with width, height, sample rate, and channel count all set to `0` (inherited from the input stream):
+
+```swift
+// StreamRecorder.defaultSettings (shown for reference)
+let defaultSettings: [AVMediaType: [String: any Sendable]] = [
+    .audio: [
+        AVFormatIDKey: Int(kAudioFormatMPEG4AAC),
+        AVSampleRateKey: 0,          // inherited from source
+        AVNumberOfChannelsKey: 0     // inherited from source
+    ],
+    .video: [
+        AVVideoCodecKey: AVVideoCodecType.h264,
+        AVVideoHeightKey: 0,         // inherited from source
+        AVVideoWidthKey: 0           // inherited from source
+    ]
+]
+```
+
+Override specific values as needed:
+
+```swift
+var settings = StreamRecorder.defaultSettings
+settings[.video]?[AVVideoCodecKey] = AVVideoCodecType.hevc
+settings[.audio]?[AVNumberOfChannelsKey] = 2
+
+try await recorder.startRecording(nil, settings: settings)
+```
+
+<Warning>
+  If `AudioMixerSettings.channels` is set to `0` and the source has more than 2 channels, the recorded audio may be silent. Explicitly set `channels` to `1` or `2` in `AudioMixerSettings` when recording.
+</Warning>
+
+## Crash-safe recording with movie fragment intervals
+
+For long recordings, enable movie fragment intervals so the file is persisted incrementally. If the app crashes or is force-quit, data up to the last fragment is preserved.
+
+```swift
+// Minimum recommended interval is 10 seconds
+await recorder.setMovieFragmentInterval(10.0)
+try await recorder.startRecording()
+```
+
+## Handling recording errors
+
+`StreamRecorder` exposes an `AsyncStream<StreamRecorder.Error>` for async error handling:
+
+```swift
+Task {
+    for await error in await recorder.error {
+        switch error {
+        case .failedToAppend(let underlying):
+            print("Append error:", underlying as Any)
+        case .failedToFinishWriting(let underlying):
+            print("Finish error:", underlying as Any)
+        case .fileAlreadyExists(let url):
+            print("File exists:", url)
+        default:
+            print("Recorder error:", error)
+        }
+        break  // Handle the first error and exit
+    }
+}
+```
+
+## Toggle recording during a live stream
+
+A common UI pattern is a record button that starts and stops recording while streaming continues uninterrupted:
+
+```swift
+func toggleRecording() {
+    if recorder.isRecording {
+        Task {
+            if let url = try? await recorder.stopRecording() {
+                // Save or share the file
+            }
+        }
+    } else {
+        Task {
+            try? await recorder.startRecording()
+        }
+    }
+}
+```
+
+## Known issue: Xcode debugger pause
+
+<Warning>
+  When starting a recording while your app is attached to Xcode, `StreamRecorder` may appear to freeze for approximately 30 seconds before the recording begins. This is a known issue with `AVAssetWriter` and the Xcode debugger (observed on iOS 26 + Xcode 26). The issue does not occur in production builds or when running without the debugger attached.
+</Warning>
+
+## Complete setup example
+
+<Steps>
+  <Step title="Create the mixer and recorder">
+    ```swift
+    let mixer = MediaMixer()
+    let recorder = StreamRecorder()
+    ```
+  </Step>
+
+  <Step title="Register recorder as a mixer output">
+    ```swift
+    await mixer.addOutput(recorder)
+    ```
+  </Step>
+
+  <Step title="Start the mixer">
+    ```swift
+    await mixer.startRunning()
+    ```
+  </Step>
+
+  <Step title="Start recording">
+    ```swift
+    try await recorder.startRecording()
+    ```
+  </Step>
+
+  <Step title="Stop recording and save">
+    ```swift
+    let url = try await recorder.stopRecording()
+
+    // Save to Photos
+    try await PHPhotoLibrary.shared().performChanges {
+        let req = PHAssetCreationRequest.forAsset()
+        req.addResource(with: .video, fileURL: url, options: nil)
+    }
+    try? FileManager.default.removeItem(at: url)
+    ```
+  </Step>
+</Steps>

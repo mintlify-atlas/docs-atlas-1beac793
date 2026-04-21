@@ -1,0 +1,237 @@
+---
+title: "StreamSession: Unified RTMP, SRT, and WHIP/WHEP API"
+description: "Use StreamSession and StreamSessionBuilderFactory to connect to RTMP, SRT, or WHIP/WHEP servers with a single, protocol-agnostic Swift API."
+---
+
+`StreamSession` is HaishinKit's protocol-agnostic streaming abstraction. Instead of working directly with protocol-specific connection objects, you register one or more session factories once at app startup, then build and connect sessions using a uniform fluent API — regardless of whether the underlying transport is RTMP, SRT, or WebRTC WHIP/WHEP. Retry logic is handled automatically by the session layer.
+
+## Module Structure
+
+Each transport protocol lives in its own Swift package module. Import only the protocols you need:
+
+<CardGroup cols={2}>
+  <Card title="RTMPHaishinKit" icon="tower-broadcast">
+    RTMP / RTMPS protocol stack. Registers via `RTMPSessionFactory`.
+  </Card>
+  <Card title="SRTHaishinKit" icon="satellite-dish">
+    SRT (Secure Reliable Transport) stack. Registers via `SRTSessionFactory`.
+  </Card>
+  <Card title="RTCHaishinKit" icon="circle-nodes">
+    WebRTC WHIP/WHEP stack. Registers via `HTTPSessionFactory`. Currently in alpha.
+  </Card>
+  <Card title="MoQTHaishinKit" icon="arrow-right-arrow-left">
+    Media over QUIC Transport. Currently in alpha.
+  </Card>
+</CardGroup>
+
+## Step 1 — Register Factories
+
+Factories must be registered before any session is created. Do this once, early in the app lifecycle (e.g., in `AppDelegate` or your app's `@main` entry point):
+
+```swift
+import HaishinKit
+import RTMPHaishinKit
+import SRTHaishinKit
+
+Task {
+    await StreamSessionBuilderFactory.shared.register(RTMPSessionFactory())
+    await StreamSessionBuilderFactory.shared.register(SRTSessionFactory())
+}
+```
+
+<Note>
+  `StreamSessionBuilderFactory.shared` is a Swift actor. All calls to `register(_:)` and `make(_:)` must be awaited or dispatched in an async context.
+</Note>
+
+Each factory declares the URL schemes it handles via `supportedProtocols`. If a factory for the same scheme set is already registered, a duplicate registration is silently ignored.
+
+## Step 2 — Build a Session
+
+`StreamSessionBuilderFactory.shared.make(_:)` returns a `StreamSessionBuilder` configured for the given URL. Chain `.setMode(_:)` and `.build()` to produce a ready-to-connect `StreamSession`.
+
+### Publish over RTMP
+
+```swift
+let session = try await StreamSessionBuilderFactory.shared
+    .make(URL(string: "rtmp://hostname/appName/streamName"))
+    .setMode(.publish)
+    .build()
+```
+
+<Note>
+  For RTMP, the stream key must be appended directly to the URL path — the last path component is treated as the stream name.
+</Note>
+
+### Playback over SRT
+
+```swift
+let session = try await StreamSessionBuilderFactory.shared
+    .make(URL(string: "srt://hostname:4438?stream=xxxxx"))
+    .setMode(.playback)
+    .build()
+```
+
+### Session modes
+
+<ParamField path="mode" type="StreamSessionMode">
+  Controls the direction of the session.
+
+  | Value | Description |
+  |---|---|
+  | `.publish` | Sends local audio/video to a server or peer. |
+  | `.playback` | Receives and decodes audio/video from a server or peer. |
+</ParamField>
+
+### Optional configuration
+
+Use `.setConfiguration(_:)` to pass protocol-specific options before calling `.build()`:
+
+```swift
+let session = try await StreamSessionBuilderFactory.shared
+    .make(url)
+    .setMode(.publish)
+    .setConfiguration(myRTMPConfig)
+    .build()
+```
+
+The configuration type must conform to `StreamSessionConfiguration`. Each module defines its own concrete type.
+
+## Step 3 — Connect
+
+Call `connect(_:)` to establish the connection. The trailing closure is called on disconnection (whether graceful or due to an error):
+
+```swift
+try session?.connect {
+    print("Disconnected from stream server")
+}
+```
+
+The session layer retries the connection automatically (up to 3 times by default) before propagating an error. You can change this with `setMaxRetryCount(_:)`.
+
+## Step 4 — Observe Ready State
+
+Monitor the connection lifecycle with the `readyState` async stream:
+
+```swift
+Task {
+    guard let stateStream = await session?.readyState else { return }
+    for await state in stateStream {
+        switch state {
+        case .connecting: print("Connecting…")
+        case .open:       print("Connected — streaming")
+        case .closing:    print("Closing…")
+        case .closed:     print("Connection closed")
+        }
+    }
+}
+```
+
+| State | Meaning |
+|---|---|
+| `.connecting` | Attempting to establish a connection. |
+| `.open` | Connection is established and media is flowing. |
+| `.closing` | Graceful teardown in progress. |
+| `.closed` | Session is terminated or was never established. |
+
+## Accessing the Stream Object
+
+Each session vends a `stream` property that conforms to `StreamConvertible`, which itself conforms to `MediaMixerOutput`. Use it to attach the mixer output:
+
+```swift
+let stream = await session?.stream
+await mixer.addOutput(stream)
+```
+
+## Complete Publish Example
+
+```swift
+import AVFoundation
+import HaishinKit
+import RTMPHaishinKit
+
+func startBroadcast() async {
+    // Register factories (safe to call multiple times)
+    await StreamSessionBuilderFactory.shared.register(RTMPSessionFactory())
+
+    do {
+        // Build a publish session
+        guard let session = try await StreamSessionBuilderFactory.shared
+            .make(URL(string: "rtmp://live.example.com/live/my-stream-key"))
+            .setMode(.publish)
+            .build()
+        else { return }
+
+        // Attach mixer output to the session's stream
+        // StreamConvertible inherits from MediaMixerOutput so the cast is safe
+        let stream = await session.stream
+        await mixer.addOutput(stream)
+        await mixer.startRunning()
+
+        // Observe ready state
+        Task {
+            for await state in await session.readyState {
+                print("Session state:", state)
+            }
+        }
+
+        // Connect
+        try await session.connect {
+            print("Session ended")
+        }
+    } catch {
+        print("Session error:", error)
+    }
+}
+```
+
+## Complete Playback Example
+
+```swift
+import HaishinKit
+import SRTHaishinKit
+
+func startPlayback(previewView: MTHKView) async {
+    await StreamSessionBuilderFactory.shared.register(SRTSessionFactory())
+
+    guard let session = try? await StreamSessionBuilderFactory.shared
+        .make(URL(string: "srt://live.example.com:4438?stream=my-channel"))
+        .setMode(.playback)
+        .build()
+    else { return }
+
+    // Point the preview view at the incoming stream
+    let stream = await session.stream
+    // StreamConvertible.addOutput attaches a StreamOutput observer
+    stream.addOutput(previewView)
+
+    try? await session.connect {
+        print("Playback ended")
+    }
+}
+```
+
+## Error Handling
+
+`StreamSessionBuilderFactory` surfaces two typed errors:
+
+| Error | When thrown |
+|---|---|
+| `.illegalArgument` | `make(_:)` was called with `nil` URL. |
+| `.notFound` | No registered factory handles the URL scheme. |
+
+```swift
+do {
+    let session = try await StreamSessionBuilderFactory.shared
+        .make(url)
+        .setMode(.publish)
+        .build()
+} catch StreamSessionBuilderFactory.Error.notFound {
+    print("No factory registered for scheme:", url?.scheme ?? "nil")
+} catch {
+    print("Unexpected error:", error)
+}
+```
+
+<Tip>
+  Register all factories before any navigation that might trigger a stream connection attempt. A missing factory throws `.notFound` at `build()` time, not at `connect()` time.
+</Tip>

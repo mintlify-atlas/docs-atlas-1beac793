@@ -1,0 +1,340 @@
+---
+title: "Video Mixing: Screen Compositing and ScreenObjects"
+description: "Composite camera feeds, images, text, and CIFilter effects into a single video frame using HaishinKit's Screen and ScreenObject compositing system."
+---
+
+HaishinKit's video mixing system lets you composite multiple visual layers — live camera tracks, static images, dynamic text, and CIFilter-based effects — into a single output frame before encoding. The compositor is built around a `Screen` object that owns a tree of `ScreenObject` nodes, each responsible for producing a `CIImage` on every render tick. All compositing work runs on the dedicated `@ScreenActor` global actor for thread safety.
+
+## Enabling Offscreen Compositing
+
+The compositing pipeline is only active when `VideoMixerSettings.mode` is set to `.offscreen`. Switch to offscreen mode before calling `startRunning()`:
+
+```swift
+mixer.setVideoMixerSettings(VideoMixerSettings(mode: .offscreen, mainTrack: 0))
+await mixer.startRunning()
+```
+
+In `.passthrough` mode (the default), raw camera buffers bypass the `Screen` entirely, so no overlays or effects are applied.
+
+## The Screen Object
+
+`mixer.screen` is a `@ScreenActor`-isolated `Screen` instance. It has a default resolution of **1280 × 720** which you can override:
+
+```swift
+Task { @ScreenActor in
+    mixer.screen.size = CGSize(width: 1920, height: 1080)
+    mixer.screen.backgroundColor = UIColor.black.cgColor
+}
+```
+
+The `Screen` manages a root `ScreenObjectContainer`. When you call `addChild(_:)`, your object is inserted into the render tree and drawn on every frame.
+
+<Note>
+  All reads and writes to `mixer.screen` and any `ScreenObject` property must happen inside a `Task { @ScreenActor in … }` block to satisfy Swift's concurrency model.
+</Note>
+
+## ScreenObject Base Class
+
+Every visual layer inherits from `ScreenObject`. The base class provides layout, alignment, and visibility controls:
+
+| Property | Type | Description |
+|---|---|---|
+| `size` | `CGSize` | Explicit render size. `CGSize.zero` means "fill parent minus margins". |
+| `horizontalAlignment` | `HorizontalAlignment` | `.left`, `.center`, or `.right` — relative to the parent container. |
+| `verticalAlignment` | `VerticalAlignment` | `.top`, `.middle`, or `.bottom` — relative to the parent container. |
+| `layoutMargin` | `UIEdgeInsets` / `NSEdgeInsets` | Insets applied before alignment positioning. |
+| `cornerRadius` | `CGFloat` | Rounds object corners; triggers alpha blending. |
+| `isVisible` | `Bool` | Hides the object without removing it from the tree. |
+| `id` | `String` | Stable identifier; auto-generated UUID if not set. Use `screen.findById(_:)` for lookup. |
+
+Alignment uses a two-axis system. For example, to pin an object to the bottom-right corner with padding:
+
+```swift
+object.horizontalAlignment = .right
+object.verticalAlignment   = .bottom
+object.layoutMargin = UIEdgeInsets(top: 0, left: 0, bottom: 16, right: 16)
+```
+
+## ScreenObject Types
+
+<CardGroup cols={2}>
+  <Card title="VideoScreenObject" icon="video">
+    Renders a live camera track. Used internally as the full-screen base layer.
+  </Card>
+  <Card title="ImageScreenObject" icon="image">
+    Renders a static `CIImage` overlay (logos, watermarks, lower-thirds).
+  </Card>
+  <Card title="TextScreenObject" icon="font">
+    Renders attributed text using Core Text for dynamic labels and captions.
+  </Card>
+  <Card title="VideoEffect / CIFilter" icon="wand-magic-sparkles">
+    Protocol-based filter chain applied per-frame to any `VideoScreenObject`.
+  </Card>
+</CardGroup>
+
+### VideoScreenObject
+
+`VideoScreenObject` renders a numbered video track from the mixer. The mixer automatically adds one full-screen `VideoScreenObject` for `mainTrack` — you add additional instances for picture-in-picture layouts.
+
+```swift
+// track 0 fills the full screen (added automatically by Screen.init)
+// Add track 1 as a PiP overlay
+Task { @ScreenActor in
+    let pip = VideoScreenObject()
+    pip.track              = 1
+    pip.size               = CGSize(width: 320, height: 180)
+    pip.cornerRadius       = 32.0
+    pip.horizontalAlignment = .right
+    pip.verticalAlignment  = .top
+    pip.layoutMargin       = UIEdgeInsets(top: 16, left: 0, bottom: 0, right: 16)
+    pip.videoGravity       = .resizeAspect
+
+    try? await mixer.screen.addChild(pip)
+}
+```
+
+Key properties of `VideoScreenObject`:
+
+| Property | Type | Description |
+|---|---|---|
+| `track` | `UInt8` | Which mixer track to render (must match `attachVideo` track number). |
+| `videoGravity` | `AVLayerVideoGravity` | `.resizeAspect`, `.resizeAspectFill`, or `.resize`. |
+| `chromaKeyColor` | `CGColor?` | When set, enables chroma-key (green screen) compositing. |
+| `frameRate` | `Int` | Read-only measured frame rate of this track. |
+
+### ImageScreenObject
+
+`ImageScreenObject` composites a `CIImage` onto the frame. Set `ciImage` directly, or load from a `CGImage` by wrapping it:
+
+```swift
+Task { @ScreenActor in
+    let imageObject = ImageScreenObject()
+
+    // Load a PNG bundled in the app
+    let imageURL = URL(fileURLWithPath: Bundle.main.path(forResource: "watermark", ofType: "png") ?? "")
+    if let provider = CGDataProvider(url: imageURL as CFURL) {
+        imageObject.ciImage = CIImage(cgImage: CGImage(
+            pngDataProviderSource: provider,
+            decode: nil,
+            shouldInterpolate: false,
+            intent: .defaultIntent
+        )!)
+        imageObject.verticalAlignment  = .bottom
+        imageObject.layoutMargin       = UIEdgeInsets(top: 0, left: 0, bottom: 16, right: 0)
+    }
+
+    try? await mixer.screen.addChild(imageObject)
+}
+```
+
+If `size` is left at `.zero`, `ImageScreenObject` automatically sizes itself to the natural dimensions of the `CIImage`.
+
+### TextScreenObject
+
+`TextScreenObject` uses Core Text to render an `NSAttributedString`. The rendered size auto-fits the text by default:
+
+```swift
+Task { @ScreenActor in
+    let label = TextScreenObject()
+    label.string               = "LIVE"
+    label.attributes           = [
+        .font:            UIFont.boldSystemFont(ofSize: 28),
+        .foregroundColor: UIColor.red
+    ]
+    label.horizontalAlignment  = .left
+    label.verticalAlignment    = .top
+    label.layoutMargin         = UIEdgeInsets(top: 12, left: 12, bottom: 0, right: 0)
+
+    try? await mixer.screen.addChild(label)
+}
+```
+
+Update `label.string` from any actor at runtime to produce live captions or clocks; the layout invalidates automatically.
+
+## Picture-in-Picture with Two Cameras
+
+This pattern uses `.multi` session mode to capture front and back cameras simultaneously, then composites them with `VideoScreenObject`:
+
+<Steps>
+  <Step title="Create a multi-cam mixer">
+    ```swift
+    let mixer = MediaMixer(captureSessionMode: .multi)
+    mixer.setVideoMixerSettings(VideoMixerSettings(mode: .offscreen, mainTrack: 0))
+    ```
+  </Step>
+  <Step title="Attach both cameras">
+    ```swift
+    Task {
+        let back  = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back)
+        let front = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .front)
+        try? await mixer.attachVideo(back,  track: 0)
+        try? await mixer.attachVideo(front, track: 1)
+    }
+    ```
+  </Step>
+  <Step title="Add the PiP overlay">
+    ```swift
+    Task { @ScreenActor in
+        let pip = VideoScreenObject()
+        pip.track               = 1        // front camera
+        pip.size                = CGSize(width: 160 * 2, height: 90 * 2)
+        pip.cornerRadius        = 32.0
+        pip.horizontalAlignment = .right
+        pip.layoutMargin        = UIEdgeInsets(top: 16, left: 0, bottom: 0, right: 16)
+        try? await mixer.screen.addChild(pip)
+    }
+    ```
+  </Step>
+  <Step title="Start the mixer">
+    ```swift
+    await mixer.startRunning()
+    ```
+  </Step>
+</Steps>
+
+## Video Effects with CIFilter
+
+Implement the `VideoEffect` protocol to wrap any `CIFilter` and apply it per-frame to a `VideoScreenObject`:
+
+```swift
+final class MonochromeEffect: VideoEffect {
+    let filter: CIFilter? = CIFilter(name: "CIColorMonochrome")
+
+    func execute(_ image: CIImage) -> CIImage {
+        guard let filter else { return image }
+        filter.setValue(image, forKey: "inputImage")
+        filter.setValue(CIColor(red: 0.75, green: 0.75, blue: 0.75), forKey: "inputColor")
+        filter.setValue(1.0, forKey: "inputIntensity")
+        return filter.outputImage ?? image
+    }
+}
+```
+
+Register and unregister effects on any `VideoScreenObject`:
+
+```swift
+Task { @ScreenActor in
+    let effect = MonochromeEffect()
+    _ = pip.registerVideoEffect(effect)
+
+    // Later, remove it:
+    _ = pip.unregisterVideoEffect(effect)
+}
+```
+
+Effects can also be registered at the `Screen` level, which applies them to the primary `videoTrackScreenObject`:
+
+```swift
+Task { @ScreenActor in
+    _ = mixer.screen.registerVideoEffect(MonochromeEffect())
+}
+```
+
+<Tip>
+  Apply effects at the `VideoScreenObject` level for per-track filtering (e.g., blur only the PiP), or at the `Screen` level to filter the main camera track.
+</Tip>
+
+## Managing the Object Tree
+
+```swift
+// Add a child
+try? await mixer.screen.addChild(myObject)
+
+// Remove a child
+await mixer.screen.removeChild(myObject)
+
+// Look up by stable ID
+Task { @ScreenActor in
+    if let found = mixer.screen.findById("my-watermark") {
+        found.isVisible = false
+    }
+}
+```
+
+<Warning>
+  All `addChild`, `removeChild`, and property mutations on `ScreenObject` instances must be performed on `@ScreenActor`. Accessing them from the main actor or other actors without the correct isolation will produce a compiler error in Swift 6 strict concurrency mode.
+</Warning>
+
+## ScreenDelegate
+
+Implement `ScreenDelegate` to receive a callback immediately before each frame is laid out. This is useful for updating time-sensitive overlays:
+
+```swift
+extension BroadcastController: ScreenDelegate {
+    func screen(_ screen: Screen, willLayout time: CMTime) {
+        // Update text label with current timestamp
+        clockLabel.string = DateFormatter.localizedString(
+            from: Date(), dateStyle: .none, timeStyle: .medium
+        )
+    }
+}
+
+// Assign on ScreenActor
+Task { @ScreenActor in
+    mixer.screen.delegate = self
+}
+```
+
+## Full Compositing Example
+
+```swift
+import AVFoundation
+import HaishinKit
+
+final class MixingController {
+    private let mixer = MediaMixer(captureSessionMode: .multi)
+
+    func setup() async {
+        // Enable offscreen compositing
+        mixer.setVideoMixerSettings(VideoMixerSettings(mode: .offscreen, mainTrack: 0))
+
+        // Attach cameras
+        try? await mixer.attachVideo(
+            AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back), track: 0)
+        try? await mixer.attachVideo(
+            AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .front), track: 1)
+        try? await mixer.attachAudio(AVCaptureDevice.default(for: .audio))
+
+        // Build the compositor tree
+        Task { @ScreenActor in
+            // PiP overlay for front camera
+            let pip = VideoScreenObject()
+            pip.track               = 1
+            pip.size                = CGSize(width: 320, height: 180)
+            pip.cornerRadius        = 24.0
+            pip.horizontalAlignment = .right
+            pip.verticalAlignment   = .top
+            pip.layoutMargin        = UIEdgeInsets(top: 16, left: 0, bottom: 0, right: 16)
+            _ = pip.registerVideoEffect(MonochromeEffect())
+            try? await mixer.screen.addChild(pip)
+
+            // Logo watermark
+            let logo = ImageScreenObject()
+            if let url = Bundle.main.url(forResource: "logo", withExtension: "png"),
+               let provider = CGDataProvider(url: url as CFURL) {
+                logo.ciImage = CIImage(cgImage: CGImage(
+                    pngDataProviderSource: provider, decode: nil,
+                    shouldInterpolate: false, intent: .defaultIntent)!)
+            }
+            logo.horizontalAlignment = .left
+            logo.verticalAlignment   = .bottom
+            logo.layoutMargin        = UIEdgeInsets(top: 0, left: 16, bottom: 16, right: 0)
+            try? await mixer.screen.addChild(logo)
+
+            // Live badge
+            let badge = TextScreenObject()
+            badge.string    = "● LIVE"
+            badge.attributes = [
+                .font:            UIFont.boldSystemFont(ofSize: 20),
+                .foregroundColor: UIColor.red
+            ]
+            badge.horizontalAlignment = .right
+            badge.verticalAlignment   = .bottom
+            badge.layoutMargin        = UIEdgeInsets(top: 0, left: 0, bottom: 16, right: 16)
+            try? await mixer.screen.addChild(badge)
+        }
+
+        await mixer.startRunning()
+    }
+}
+```

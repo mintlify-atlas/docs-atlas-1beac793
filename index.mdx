@@ -1,97 +1,67 @@
 ---
-title: "Introduction"
-description: "Welcome to the new home for your documentation"
+title: "HaishinKit: Live streaming SDK for Apple platforms"
+description: "HaishinKit is a Swift SDK for camera and microphone live streaming via RTMP, SRT, WHIP/WHEP, and MoQT on iOS, macOS, tvOS, and visionOS."
 ---
 
-## Setting up
+HaishinKit is a Swift library for building live streaming applications on Apple platforms. It provides a unified API for publishing and playing back streams over RTMP, SRT, WHIP/WHEP, and MoQT protocols, with built-in support for multi-camera capture, video mixing, screen capture, and audio mixing — all using Swift's modern async/await concurrency model.
 
-Get your documentation site up and running in minutes.
-
-<Card
-  title="Start here"
-  icon="rocket"
-  href="/quickstart"
-  horizontal
->
-  Follow our three step quickstart guide.
-</Card>
-
-## Make it yours
-
-Design a docs site that looks great and empowers your users.
-
-<Columns cols={2}>
-  <Card
-    title="Edit locally"
-    icon="pen-to-square"
-    href="/development"
-  >
-    Edit your docs locally and preview them in real time.
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Get a working RTMP or SRT stream running in minutes with MediaMixer and a connection
   </Card>
-  <Card
-    title="Customize your site"
-    icon="palette"
-    href="/essentials/settings"
-  >
-    Customize the design and colors of your site to match your brand.
+  <Card title="Installation" icon="box" href="/installation">
+    Add HaishinKit to your Xcode project via Swift Package Manager
   </Card>
-    <Card
-    title="Set up navigation"
-    icon="map"
-    href="/essentials/navigation"
-  >
-    Organize your docs to help users find what they need and succeed with your product.
+  <Card title="MediaMixer" icon="sliders" href="/concepts/media-mixer">
+    Learn how MediaMixer manages camera, microphone, and screen inputs for your stream
   </Card>
-  <Card
-    title="API documentation"
-    icon="terminal"
-    href="/api-reference/introduction"
-  >
-    Auto-generate API documentation from OpenAPI specifications.
+  <Card title="Protocols" icon="tower-broadcast" href="/protocols/rtmp">
+    Explore RTMP, SRT, WHIP/WHEP, and MoQT protocol modules
   </Card>
-</Columns>
+</CardGroup>
 
-## Create beautiful pages
+## What you can build
 
-Everything you need to create world-class documentation.
+HaishinKit gives you the building blocks for professional-grade live streaming apps on Apple platforms. Whether you're targeting iOS, macOS, tvOS, or visionOS, HaishinKit handles the complex media pipeline so you can focus on your application.
 
-<Columns cols={2}>
-  <Card
-    title="Write with MDX"
-    icon="pen-fancy"
-    href="/essentials/markdown"
-  >
-    Use MDX to style your docs pages.
+<CardGroup cols={3}>
+  <Card title="RTMP streaming" icon="circle-dot">
+    Publish and play back streams to any RTMP server with H.264/HEVC video and AAC/OPUS audio
   </Card>
-  <Card
-    title="Code samples"
-    icon="code"
-    href="/essentials/code"
-  >
-    Add sample code to demonstrate how to use your product.
+  <Card title="SRT streaming" icon="signal">
+    Low-latency SRT streaming in caller, listener, and rendezvous modes using libsrt
   </Card>
-  <Card
-    title="Images"
-    icon="image"
-    href="/essentials/images"
-  >
-    Display images and other media.
+  <Card title="WebRTC (WHIP/WHEP)" icon="globe">
+    Publish and subscribe to WebRTC streams using the WHIP and WHEP signaling protocols
   </Card>
-  <Card
-    title="Reusable snippets"
-    icon="recycle"
-    href="/essentials/reusable-snippets"
-  >
-    Write once and reuse across your docs.
+  <Card title="Multi-camera" icon="camera">
+    Simultaneously capture from multiple cameras using AVCaptureMultiCamSession on supported devices
   </Card>
-</Columns>
+  <Card title="Video mixing" icon="layer-group">
+    Overlay images, text, and picture-in-picture video on your stream using ScreenObjects
+  </Card>
+  <Card title="Screen capture" icon="desktop">
+    Stream your screen using ReplayKit (iOS) or ScreenCaptureKit (macOS)
+  </Card>
+</CardGroup>
 
-## Need inspiration?
+## Get started
 
-<Card
-  title="See complete examples"
-  icon="stars"
-  href="https://mintlify.com/customers"
->
-  Browse our showcase of exceptional documentation sites.
-</Card>
+<Steps>
+  <Step title="Install HaishinKit">
+    Add the Swift package to your Xcode project from `https://github.com/HaishinKit/HaishinKit.swift`, selecting the modules you need.
+  </Step>
+  <Step title="Configure permissions">
+    Add `NSCameraUsageDescription` and `NSMicrophoneUsageDescription` to your `Info.plist`, and set up `AVAudioSession` on iOS.
+  </Step>
+  <Step title="Create a MediaMixer">
+    Attach your camera and microphone devices to a `MediaMixer` instance and call `startRunning()`.
+  </Step>
+  <Step title="Connect and publish">
+    Create an `RTMPConnection` or `SRTConnection`, connect to your server, and publish your stream.
+  </Step>
+</Steps>
+
+<Note>
+  HaishinKit requires iOS 15+, macOS 12+, tvOS 15+, or visionOS 1.0+, and Swift 6.0 with Xcode 16.4 or later.
+</Note>

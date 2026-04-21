@@ -1,0 +1,50 @@
+---
+title: 'Known issues and Xcode debugging limitations'
+description: 'Known HaishinKit issues when running from Xcode: app freezes on launch with MediaMixer and on recording start with StreamRecorder. Includes workarounds.'
+---
+
+Some issues affect HaishinKit specifically when an app is launched directly from Xcode with the debugger attached. These problems originate in the underlying Apple frameworks and cannot be resolved within HaishinKit itself. They do not occur when the app is launched normally from the device.
+
+## Xcode debugging issues
+
+The following issues have been confirmed on iOS 18 and Xcode 16, and are still present in the latest versions of both.
+
+<Warning>
+  **Application freezes on launch (`MediaMixer#startRunning()`)**
+
+  When the app is launched directly from Xcode (i.e. with the debugger attached), calling `MediaMixer.startRunning()` may cause the application to freeze indefinitely.
+
+  This freeze has been confirmed on **iOS 18 / Xcode 16** and is still ongoing in the latest release.
+
+  **Workaround:** Force-quit the app on the device, then relaunch it by tapping the app icon directly — without using Xcode's Run button. The freeze does not occur on a normal (non-debugger) launch.
+</Warning>
+
+<Warning>
+  **Freeze when starting recording (`StreamRecorder#startRecording()`)**
+
+  When the app is launched directly from Xcode, calling `StreamRecorder.startRecording()` may also cause the application to freeze.
+
+  This freeze has been confirmed on **iOS 18 / Xcode 16** and is still ongoing in the latest release.
+
+  **Workaround:** Force-quit the app on the device, then relaunch it by tapping the app icon directly — without using Xcode's Run button. The freeze does not occur on a normal (non-debugger) launch.
+</Warning>
+
+## Recommended workaround
+
+If you encounter either freeze during development, follow these steps:
+
+<Steps>
+  <Step title="Disconnect from Xcode">
+    Stop the Xcode run session (press the Stop button or use **Product → Stop**).
+  </Step>
+  <Step title="Force-quit the app on device">
+    On your iPhone or iPad, swipe up from the home bar (or double-press the Home button) to open the app switcher, then swipe the app away to force-quit it.
+  </Step>
+  <Step title="Relaunch from the device">
+    Tap the app icon on the home screen to launch it without the Xcode debugger attached.
+  </Step>
+</Steps>
+
+<Note>
+  If you need to debug the streaming or recording flow, consider using `os_log` or a file-based logger and reviewing logs after the fact, rather than keeping the Xcode debugger attached during the affected calls.
+</Note>

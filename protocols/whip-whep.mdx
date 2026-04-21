@@ -1,0 +1,113 @@
+---
+title: 'WebRTC streaming with WHIP and WHEP'
+description: 'Learn how to publish via WHIP and play back via WHEP using RTCHaishinKit, a WebRTC protocol stack built on libdatachannel with H.264 and OPUS support.'
+---
+
+RTCHaishinKit is the WHIP/WHEP protocol stack for HaishinKit. It is built on [libdatachannel](https://github.com/paullouisageneau/libdatachannel), compiled as an xcframework, and provides a Swift-native API for WebRTC-based live streaming. Use WHIP (WebRTC-HTTP Ingestion Protocol) to publish streams and WHEP (WebRTC-HTTP Egress Protocol) to play them back.
+
+<Warning>
+RTCHaishinKit is in **alpha**. APIs may change between releases. It is not recommended for production use.
+</Warning>
+
+## Features
+
+<CardGroup cols={2}>
+  <Card title="WHIP publishing" icon="broadcast">
+    Publish live video and audio to a WHIP-compatible ingest endpoint using H.264 and OPUS.
+  </Card>
+  <Card title="WHEP playback" icon="play">
+    Play back streams from a WHEP-compatible server using H.264 and OPUS.
+  </Card>
+  <Card title="H.264 + OPUS" icon="film">
+    Codec support is limited to H.264 for video and OPUS for audio.
+  </Card>
+  <Card title="libdatachannel" icon="code">
+    Backed by libdatachannel, a lightweight C++ WebRTC implementation.
+  </Card>
+</CardGroup>
+
+## Codec support
+
+| Media | Codec | Publish (WHIP) | Playback (WHEP) |
+|---|---|---|---|
+| Video | H.264 | Supported | Supported |
+| Audio | OPUS | Supported | Supported |
+
+## Set up logging
+
+Enable WebRTC-level logging before starting any sessions. This wraps `rtcInitLogger` from libdatachannel.
+
+```swift
+await RTCLogger.shared.setLevel(.debug)
+```
+
+## Register the session factory
+
+RTCHaishinKit works through the `StreamSession` API. Register `HTTPSessionFactory` with the shared `StreamSessionBuilderFactory` before creating any sessions. `HTTPSessionFactory` handles `http://` and `https://` URL schemes, which covers WHIP and WHEP endpoints.
+
+```swift
+import HaishinKit
+import RTCHaishinKit
+
+await StreamSessionBuilderFactory.shared.register(HTTPSessionFactory())
+```
+
+<Note>
+This registration step is required once at app startup. Sessions created before registration will throw `StreamSessionBuilderFactory.Error.notFound`.
+</Note>
+
+## Publish with WHIP
+
+After registering the factory, build a `.publish` session using your WHIP endpoint URL (typically an `https://` URL):
+
+```swift
+import HaishinKit
+import RTCHaishinKit
+
+// Register once at startup
+await StreamSessionBuilderFactory.shared.register(HTTPSessionFactory())
+
+// Build and connect a WHIP publish session
+let session = try await StreamSessionBuilderFactory.shared
+    .make(URL(string: "https://your-whip-server/ingest/stream-key"))
+    .setMode(.publish)
+    .build()
+
+try await session?.connect {
+    print("WHIP session ended")
+}
+```
+
+## Play back with WHEP
+
+Playback follows the same pattern with `.playback` mode and a WHEP endpoint URL:
+
+```swift
+import HaishinKit
+import RTCHaishinKit
+
+await StreamSessionBuilderFactory.shared.register(HTTPSessionFactory())
+
+let session = try await StreamSessionBuilderFactory.shared
+    .make(URL(string: "https://your-whep-server/egress/stream-key"))
+    .setMode(.playback)
+    .build()
+
+try await session?.connect {
+    print("WHEP session ended")
+}
+```
+
+<Tip>
+See the [StreamSession guide](/concepts/stream-session) for how to attach a `MediaMixer` output to the session stream and observe ready state changes.
+</Tip>
+
+## Alpha status
+
+RTCHaishinKit is under active development. The following are known limitations at this stage:
+
+- Only H.264 and OPUS codecs are supported.
+- The Session API surface may change in future releases.
+- Not recommended for production deployments.
+
+Watch the [HaishinKit.swift repository](https://github.com/shogo4405/HaishinKit.swift) for updates on stability and feature additions.
